@@ -91,9 +91,11 @@ class DFLTrainer:
 
             self.current_round+=1
     def run_tasks(self, processes):
-        self.processes = processes
         for p in processes:
             p.start()
+
+        self.processes = processes
+
         for p in processes:
             p.join()
         # kill all processes just in case
@@ -211,10 +213,17 @@ class DFLTrainer:
         else:
             # use current model
             aggregated_model = torch.load(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt'), weights_only=True)
+
+        device = torch.device('cpu')
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            device = torch.device(f'cuda:{node_hash % torch.cuda.device_count()}')
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
         # load model
         model = load_model(self.dataset_name)(epochs=self.epochs_per_round, batch_size=self.batch_size, num_samples=self.num_samples,
                             node_hash=node_hash, evaluating=True,
-                            device = torch.device('cuda:{}'.format(node_hash%torch.cuda.device_count())))
+                            device = device)
+        
         model.model.load_state_dict(aggregated_model)
 
         # save model for next round
