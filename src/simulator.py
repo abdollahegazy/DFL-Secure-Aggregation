@@ -10,7 +10,6 @@ import yaml
 import eval
 import torch
 from torch.utils.data import Subset
-import signal
 from training.models.model_loader import load_model
 from training.dataloader import load_data
 from aggregation import strategies
@@ -43,7 +42,7 @@ class DFLTrainer:
 
         self.nodes = list(range(self.num_nodes))
         self.malicious_nodes = set(node_hash for node_hash in self.nodes if \
-                                 self.topology[node_hash]['malicious'])
+                                 self.topology.nodes[node_hash]['malicious'])
         
         self.exp_id = exp_id
         self.exp_iteration = exp_iteration
@@ -193,17 +192,17 @@ class DFLTrainer:
             None
         """
         neighbors = self.topology.get_neighbors(node_hash)
-        is_malicous = self.topology[node_hash]['malicious']
+        is_malicous = self.topology.nodes[node_hash]['malicious']
         if not is_malicous:
             model_paths = [os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{neighbor}.pt') 
                         for neighbor in neighbors]
             model_paths.append(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt'))
         else:
             model_paths = [os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{neighbor}.pt')\
-                           for neighbor in neighbors if not self.topology[neighbor]['malicious']]
+                           for neighbor in neighbors if not self.topology.nodes[neighbor]['malicious']]
         if (not is_malicous and len(model_paths)>1) or (is_malicous and len(model_paths)>0):
             agg_args = {'f': len(model_paths), 
-                        'm': len([neighbor for neighbor in neighbors if self.topology[neighbor]['malicious']]),
+                        'm': len([neighbor for neighbor in neighbors if self.topology.nodes[neighbor]['malicious']]),
                         'trimmed_mean_beta': experiment_params['trimmed_mean_beta']}
             aggregator = strategies.create_aggregator(node_hash, agg_args)
             print("Node ", node_hash, "aggregating")
@@ -225,14 +224,14 @@ class DFLTrainer:
         model.save_model(os.path.join(save_dir, f'node_{node_hash}.pt'))
         print("Saved model for node ", node_hash, "to", os.path.join(save_dir, f'node_{node_hash}.pt'))
         # if malicious, dont evaluate. Instead, attack the model
-        if self.topology[node_hash]['malicious']:
+        if self.topology.nodes[node_hash]['malicious']:
             #attacker
             attack_type =experiment_params['attack_type'].lower()
             attack_args = experiment_params['attack_args']
             attack_args['defense'] = experiment_params['aggregation'].lower()
             neighbors = self.topology.get_neighbors(node_hash)
             attack_args['nodes'] = len(neighbors)
-            attack_args['malicious_nodes'] = len([neighbor for neighbor in neighbors if self.topology[neighbor]['malicious']])
+            attack_args['malicious_nodes'] = len([neighbor for neighbor in neighbors if self.topology.nodes[neighbor]['malicious']])
             attacker = attacks.create_attacker(attack_type, attack_args, node_hash)
             if attack_type=='alie':
                 print("starting attack alie")
