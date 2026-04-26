@@ -4,7 +4,7 @@ from typing import Any
 import networkx
 import matplotlib.pyplot as plt
 from networkx.classes.coreviews import AtlasView
-
+import math
 # seed
 random.seed(42)
 
@@ -97,7 +97,6 @@ class Topology(networkx.Graph):
         return super().__getitem__(n)
 
 if __name__== '__main__':
-    import math
     n=128
     topology = Topology()
 
