@@ -1,5 +1,4 @@
 import os
-import yaml
 import json
 import matplotlib.pyplot as plt
 
@@ -42,7 +41,7 @@ def save_results(experiment_params):
             avg_losses_by_round[r] += node_losses[r]
         num_benign_nodes += 1
     results['experiments'][-1]['accuracies_by_round'] = [a/num_benign_nodes for a in avg_accuracies_by_round]
-    results['experiments'][-1]['loss_by_round'] = [l/num_benign_nodes for l in avg_losses_by_round]
+    results['experiments'][-1]['loss_by_round'] = [loss/num_benign_nodes for loss in avg_losses_by_round]
     with open(os.path.join(save_dir,f'{exp_id}.json'),'w') as f:
         json.dump(results, f)
     print("Saved results to", os.path.join(save_dir,f'{exp_id}.json'))
@@ -81,10 +80,10 @@ def make_plot(exp_id):
 
     print(len(results['experiments']))
     line_type = { 'scale-free': '-', 'small-world': '--', 'two-f-1': '-.'}
-    line_color = {0.0: 'green', 0.3: 'blue', 0.6: 'red', .15: 'pink', .45: 'orange', 0.1: 'pink', 0.05: 'purple', 0.15: 'brown', 0.25: 'black'}
+    line_color = {0.0: 'green', 0.3: 'blue', 0.6: 'red', .15: 'pink', .45: 'orange', 0.1: 'pink', 0.05: 'purple', 0.25: 'black'}
     for i in range(len(results['experiments'])):
         accuracies_by_round = results['experiments'][i]['accuracies_by_round']
-        experiment_params = results['experiments'][i]['params']
+        # experiment_params = results['experiments'][i]['params']
         byzantine_proportion = results['experiments'][i]['params']['malicious_proportion']
         topology = results['experiments'][i]['params']['topology']
         plt.plot(range(1,len(accuracies_by_round)+1), accuracies_by_round, label=f'{topology} b={byzantine_proportion}', linestyle=line_type[topology], color=line_color[byzantine_proportion])
