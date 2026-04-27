@@ -47,6 +47,10 @@ class BaseModel:
         self.model.load_state_dict(torch.load(path, weights_only=True))
 
     def save_model(self, path):
+
+        if self.model is None:
+            raise ValueError("Model must be initialized before saving model")
+        
         if not os.path.exists(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
         torch.save(self.model.state_dict(), path)

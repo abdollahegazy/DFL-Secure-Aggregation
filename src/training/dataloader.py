@@ -8,6 +8,7 @@ def load_data(dataset_name: str):
         return load_cifar10()
     else:
         raise ValueError('Dataset not supported')
+    
 def load_mnist():
     mnist_transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
     mnist_dataset = datasets.MNIST(root='./src/training/data', train=True, transform=mnist_transform, download=True)

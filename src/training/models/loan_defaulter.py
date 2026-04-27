@@ -10,9 +10,7 @@ from logging import Logger
 import copy
 
 
-        
-
-
+    
 class LoanDefaulter(BaseModel):
     def __init__(self, data_path: str, num_samples: int, node_hash: int, epochs: int, batch_size: int, logger: Logger, evaluating=False):
         losses = [[0,0]]

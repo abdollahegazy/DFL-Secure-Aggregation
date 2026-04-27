@@ -2,7 +2,7 @@ id: 13
 iteration: 2
 description: "small world 0.3 small-world random"
 use_saved_topology: true # if true, the topology will be loaded from the saved file
-topology_file: '/mnt/home/bhatta70/Documents/DFL-Secure-Aggregation/src/config/topologies/random_placement/small_world_0.3.json'
+topology_file: 'src/config/topologies/random_placement/small_world_0.3.json'
 # fl settings
 nodes: 128
 dataset: "mnist"
@@ -37,4 +37,3 @@ data_path: "src/training/data/loan_data.csv"
 num_samples: 250
 epochs_per_round: 2 # number of epochs of local training per round
 batch_size: 32 # batch size for local training
-

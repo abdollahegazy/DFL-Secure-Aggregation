@@ -7,7 +7,7 @@ from multiprocessing import Manager
 import os
 import random
 import yaml
-import eval
+import evaluation
 import torch
 from torch.utils.data import Subset
 from training.models.model_loader import load_model
@@ -56,10 +56,11 @@ class DFLTrainer:
         manager = Manager()
         metrics_dict = {round_num: {'accuracy': 0, 'loss': 0} for round_num in range(self.num_rounds)}
         self.metrics_dict = manager.dict(metrics_dict)
+        
     def load_data(self):
         """ Load the data for the simulation. """
         print('Loading data')
-        self.dataset = load_data(self.dataset)
+        self.dataset = load_data(self.dataset_name)
         
     def run(self):
         """
@@ -84,6 +85,8 @@ class DFLTrainer:
             self.aggregate_network()
 
             # delete files from current round
+
+            # prob TODO: add some checkpoint flagg to the yaml to avoid this
             if self.current_round>0:
                 prev_dir = os.path.join(self.models_base_dir, f'round_{self.current_round-1}')
                 for file in os.listdir(prev_dir):
@@ -105,7 +108,7 @@ class DFLTrainer:
 
     def train_network(self):
         """
-        Train the models on the nodes.
+        Train the models on each node in parallel.
         """
         print('Training models')
         for idx in range(0,self.num_nodes, self.num_workers):
@@ -262,15 +265,19 @@ class DFLTrainer:
             print(f'Node {node_hash} round {self.current_round} accuracy: {accuracy} loss: {loss}')
             # save to node metrics json
         
-            eval.save_node_metrics(node_hash, accuracy, loss, self.exp_id, self.exp_iteration)
+            evaluation.save_node_metrics(node_hash, accuracy, loss, self.exp_id, self.exp_iteration)
 
     def __del__(self):
         torch.cuda.empty_cache()
         delete_files(self.exp_id, self.exp_iteration)
-
 def delete_files(exp_id, iteration, node_metrics=False):
     """
     Delete files in the models and core* files
+
+    Args:
+        exp_id (): The experiment id.
+        iteration (): The experiment iteration.
+        node_metrics (): Whether to delete node metrics json files.
     """
     models_dir = os.path.join('src','training','models', f'experiment_{exp_id}', f'{iteration}','nodes')
     if not os.path.exists(models_dir):
@@ -303,20 +310,22 @@ def run_simulation(params):
     Args:
         params (dict): A dictionary of parameters for the simulation.
 
-    Returns:
-        None
     """
     global topology, trainer
-    ### get args
+
+    # get args
     num_nodes = params['nodes']
     malicious_proportion = params['malicious_proportion']
     exp_id = params['id']
+
     topology = graph.Topology()
     topology_file = experiment_params['topology_file']
+    
     if not params['use_saved_topology']:
-        print(f'Created topology with {num_nodes} nodes')
+        print(f'Creating topology with {num_nodes} nodes')
         malicous_nodes = random.sample(range(num_nodes), int(malicious_proportion*num_nodes))
         print("Malicious nodes: ", malicous_nodes)
+
         #### add nodes to network
         if experiment_params['topology']=='random':
             edge_density = params['edge_density']
@@ -328,29 +337,35 @@ def run_simulation(params):
         elif experiment_params['topology']=='scale-free':
             m = params['scale_free_m']
             topology.create_scale_free_graph(num_nodes, m,malicous_nodes)
-        elif experiment_params['topology'] == 'two-f-1':
-            topology.create_2f1_disjoint_graph(num_nodes, malicous_nodes)
+        # this is not defined in the topology class 
+        # elif experiment_params['topology'] == 'two-f-1':
+            # topology.create_2f1_disjoint_graph(num_nodes, malicous_nodes)
         else:
             raise ValueError('Invalid topology: must be random, small-world, or scale-free')
-
-
         # save topology
         topology.save(topology_file)
     else:
         topology.load(topology_file)
         print('Using saved topology')
 
-    dfl_trainer = DFLTrainer(num_nodes=num_nodes, topology=topology, num_workers=params['num_workers'], num_rounds=params['rounds'],
-                             epochs_per_round=params['epochs_per_round'], batch_size=params['batch_size'], num_samples=params['num_samples'],
-                             aggregation_method=params['aggregation'], attack_method=params['attack_type'], dataset=params['dataset'])
+    dfl_trainer = DFLTrainer(num_nodes=num_nodes, 
+                             topology=topology, 
+                             num_workers=params['num_workers'], 
+                             num_rounds=params['rounds'],
+                             epochs_per_round=params['epochs_per_round'], 
+                             batch_size=params['batch_size'], 
+                             num_samples=params['num_samples'],
+                             aggregation_method=params['aggregation'], 
+                             attack_method=params['attack_type'], 
+                             dataset=params['dataset'])
 
 
     trainer = dfl_trainer
     dfl_trainer.load_data()
     dfl_trainer.run()
 
-    eval.save_results(experiment_params)
-    eval.make_plot(exp_id)
+    evaluation.save_results(experiment_params)
+    evaluation.make_plot(exp_id)
 
 def signal_handler(sig, frame):
     global trainer
@@ -369,5 +384,7 @@ if __name__=='__main__':
     print(experiment_params)
     print()
 
+    # delete old expirement files
     delete_files(experiment_params['id'], experiment_params['iteration'], node_metrics=True)
+
     run_simulation(experiment_params)
