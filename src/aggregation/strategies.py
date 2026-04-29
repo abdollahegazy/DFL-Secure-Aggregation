@@ -1,13 +1,8 @@
 import torch
 import numpy as np
-import yaml
-import os
 from training.device import resolve_device
 
-experiment_yaml = os.path.join('src','config', 'experiment.yaml')
-with open(experiment_yaml) as f:
-    experiment_params = yaml.safe_load(f)
-def create_aggregator(node_hash, agg_args: dict = {}):
+def create_aggregator(node_hash, agg_args: dict):
     """
     Create an aggregator based on the aggregator type.
 
@@ -17,8 +12,7 @@ def create_aggregator(node_hash, agg_args: dict = {}):
     Returns:
         Aggregator: An aggregator object.
     """
-    global experiment_params
-    aggregator_type = agg_args.get('aggregation', experiment_params['aggregation'])
+    aggregator_type = agg_args['aggregation']
     device = resolve_device(agg_args.get('device', 'cpu'))
     if aggregator_type == 'fedavg':
         return FedAvg(device=device)

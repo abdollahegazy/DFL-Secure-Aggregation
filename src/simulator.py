@@ -1,6 +1,7 @@
 '''
 This file is the main entry point for the simulator. It sets up the server and runs the nodes.
 '''
+import argparse
 from network import graph
 import multiprocessing
 from multiprocessing import Manager
@@ -14,16 +15,9 @@ from training.models.model_loader import load_model_by_name
 from training.dataloader import load_data_by_name
 from training.device import resolve_device
 from aggregation import strategies
-import time
 from attack import attacks
 # seed
 random.seed(42)
-
-
-
-experiment_yaml = os.path.join('src','config', 'experiment.yaml')
-with open(experiment_yaml) as f:
-    experiment_params = yaml.safe_load(f)
 
 
 def _train_worker_wrapper(args):
@@ -45,10 +39,11 @@ class DFLTrainer:
                  aggregation_method, 
                  attack_method, 
                  model,
-                 exp_id=experiment_params['id'], 
-                 exp_iteration=experiment_params['iteration'],
-                 dataset=experiment_params['dataset'],
-                 device=experiment_params.get('device', 'cpu')):
+                 exp_id,
+                 exp_iteration,
+                 dataset,
+                 params,
+                 device='cpu'):
         """
         Args:
             num_nodes (int): The number of nodes in the network.
@@ -64,6 +59,7 @@ class DFLTrainer:
             exp_id (str): The experiment id.
             exp_iteration (str): The experiment iteration.
             dataset (str): The dataset to use for training and evaluation.
+            params (dict): The full experiment config loaded from YAML.
             device (str): The torch device to use for this simulation.
         """
         self.num_nodes = num_nodes
@@ -75,6 +71,9 @@ class DFLTrainer:
         self.num_samples = num_samples
         self.aggregation_method = aggregation_method
         self.attack_method = attack_method
+        self.params = params
+        self.trimmed_mean_beta = params['trimmed_mean_beta']
+        self.attack_args = dict(params['attack_args'])
 
         self.node_idx = list(range(self.num_nodes))
         self.malicious_nodes = set(node_hash for node_hash in self.node_idx if \
@@ -193,7 +192,8 @@ class DFLTrainer:
 
         # save model in round+1 dir
         print('\nAggregating models')
-
+        round_dir = os.path.join(self.models_base_dir, f'round_{self.current_round}')
+        print(f'Files in {round_dir}: {os.listdir(round_dir)}')
         # malicious nodes should aggregate first
         # then benign nodes aggregate
         malicious = [n for n in self.node_idx if n in self.malicious_nodes]
@@ -240,7 +240,7 @@ class DFLTrainer:
             agg_args = {
                 'f': len(model_paths),
                 'm': len([n for n in neighbors if self.topology.nodes[n]['malicious']]),
-                'trimmed_mean_beta': experiment_params['trimmed_mean_beta'],
+                'trimmed_mean_beta': self.trimmed_mean_beta,
                 'aggregation': self.aggregation_method,
                 'device': self.device,
             }
@@ -265,7 +265,7 @@ class DFLTrainer:
     def _execute_attack(self, node_id):
         neighbors = self.topology.get_neighbors(node_id)
         attack_type = self.attack_method.lower()
-        attack_args = dict(experiment_params['attack_args'])
+        attack_args = dict(self.attack_args)
         attack_args['defense'] = self.aggregation_method.lower()
         attack_args['device'] = self.device
         attack_args['nodes'] = len(neighbors)
@@ -304,10 +304,10 @@ class DFLTrainer:
         print(f'Node {node_id} round {self.current_round} accuracy: {accuracy} loss: {loss}')
         evaluation.save_node_metrics(node_id, accuracy, loss, self.exp_id, self.exp_iteration)
 
-    def __del__(self):
-        if getattr(self, "device", None) is not None and self.device.type == "cuda":
-            torch.cuda.empty_cache()
-        delete_files(self.exp_id, self.exp_iteration)
+    # def __del__(self):
+        # if getattr(self, "device", None) is not None and self.device.type == "cuda":
+            # torch.cuda.empty_cache()
+        # delete_files(self.exp_id, self.exp_iteration)
         
 def delete_files(exp_id, iteration, node_metrics=False):
     """
@@ -319,11 +319,10 @@ def delete_files(exp_id, iteration, node_metrics=False):
         node_metrics (): Whether to delete node metrics json files.
     """
     models_dir = os.path.join('src','training','models', f'experiment_{exp_id}', f'{iteration}','nodes')
-    if not os.path.exists(models_dir):
-        return
-    for round_dir in os.listdir(models_dir):
-        for file in os.listdir(os.path.join(models_dir, round_dir)):
-            os.remove(os.path.join(models_dir, round_dir, file))
+    if os.path.exists(models_dir):
+        for round_dir in os.listdir(models_dir):
+            for file in os.listdir(os.path.join(models_dir, round_dir)):
+                os.remove(os.path.join(models_dir, round_dir, file))
 
     # remove json
     if node_metrics:
@@ -337,7 +336,29 @@ def delete_files(exp_id, iteration, node_metrics=False):
         if file.startswith('core'):
             os.remove(file)
 
+def load_experiment_params(config_path):
+    """
+    Load experiment parameters from the explicit YAML config path.
+    """
+    with open(config_path) as f:
+        params = yaml.safe_load(f)
+    if params is None:
+        raise ValueError(f'Config file is empty: {config_path}')
+    return params
+
+def save_params_snapshot(params):
+    """
+    Save the exact parameters used for this run beside the node metrics.
+    """
+    save_dir = os.path.join('src','training','results', f"experiment_{params['id']}", f"{params['iteration']}")
+    os.makedirs(save_dir, exist_ok=True)
+    snapshot_path = os.path.join(save_dir, 'params.yaml')
+    with open(snapshot_path, 'w') as f:
+        yaml.safe_dump(params, f, sort_keys=False)
+    print("Saved experiment params to", snapshot_path)
+
 trainer = None
+active_params = None
 def run_simulation(params):
     """
     Runs the simulation with the experiment arguments.
@@ -350,7 +371,8 @@ def run_simulation(params):
         params (dict): A dictionary of parameters for the simulation.
 
     """
-    global topology, trainer
+    global topology, trainer, active_params
+    active_params = params
 
     # get args
     num_nodes = params['nodes']
@@ -358,7 +380,7 @@ def run_simulation(params):
     exp_id = params['id']
 
     topology = graph.Topology()
-    topology_file = experiment_params['topology_file']
+    topology_file = params['topology_file']
     
     if not params['use_saved_topology']:
         print(f'Creating topology with {num_nodes} nodes')
@@ -366,22 +388,25 @@ def run_simulation(params):
         print("Malicious nodes: ", malicous_nodes)
 
         #### add nodes to network
-        if experiment_params['topology']=='random':
+        if params['topology']=='random':
             edge_density = params['edge_density']
             topology.create_random_graph(num_nodes, edge_density, malicous_nodes)
-        elif experiment_params['topology']=='small-world':
+        elif params['topology']=='small-world':
             k = params['small_world_k']
             p = params['small_world_beta']
             topology.create_small_world_graph(num_nodes, k, p, malicous_nodes)
-        elif experiment_params['topology']=='scale-free':
+        elif params['topology']=='scale-free':
             m = params['scale_free_m']
             topology.create_scale_free_graph(num_nodes, m,malicous_nodes)
         # this is not defined in the topology class 
-        # elif experiment_params['topology'] == 'two-f-1':
+        # elif params['topology'] == 'two-f-1':
             # topology.create_2f1_disjoint_graph(num_nodes, malicous_nodes)
         else:
             raise ValueError('Invalid topology: must be random, small-world, or scale-free')
         # save topology
+        topology_dir = os.path.dirname(topology_file)
+        if topology_dir:
+            os.makedirs(topology_dir, exist_ok=True)
         topology.save(topology_file)
     else:
         topology.load(topology_file)
@@ -397,7 +422,10 @@ def run_simulation(params):
                              aggregation_method=params['aggregation'], 
                              attack_method=params['attack_type'], 
                              model=params.get('model_name', params['dataset']),
+                             exp_id=params['id'],
+                             exp_iteration=params['iteration'],
                              dataset=params['dataset'],
+                             params=params,
                              device=params.get('device', 'cpu'))
 
 
@@ -405,28 +433,33 @@ def run_simulation(params):
     dfl_trainer.load_data()
     dfl_trainer.run()
 
-    evaluation.save_results(experiment_params)
+    evaluation.save_results(params)
     evaluation.make_plot(exp_id)
 
 def signal_handler(sig, frame):
-    global trainer
+    global trainer, active_params
     if trainer is not None:
-        for p in trainer.processes:
+        for p in getattr(trainer, "processes", []):
             p.kill()
         if getattr(trainer, "device", None) is not None and trainer.device.type == "cuda":
             torch.cuda.empty_cache()
-    delete_files(experiment_params['id'], experiment_params['iteration'])
+    if active_params is not None:
+        delete_files(active_params['id'], active_params['iteration'])
     exit(0)
 
 if __name__=='__main__':
-    experiment_yaml = os.path.join('src','config', 'experiment.yaml')
-    with open(experiment_yaml) as f:
-        experiment_params = yaml.safe_load(f)
+    parser = argparse.ArgumentParser(description='Run a DFL simulation from an explicit YAML config.')
+    parser.add_argument('--config', required=True, help='Path to the experiment YAML config.')
+    args = parser.parse_args()
+
+    experiment_params = load_experiment_params(args.config)
     print("Starting simulation with the following parameters:\n")
+    print("Config:", args.config)
     print(experiment_params)
     print()
 
     # delete old expirement files
     delete_files(experiment_params['id'], experiment_params['iteration'], node_metrics=True)
+    save_params_snapshot(experiment_params)
 
     run_simulation(experiment_params)

@@ -36,7 +36,7 @@ def save_results(experiment_params):
             node_metrics = json.load(f)
         node_accuracies = node_metrics['accuracies']
         node_losses = node_metrics['losses']
-        for r in range(30):
+        for r in range(experiment_params['rounds']):
             avg_accuracies_by_round[r] += node_accuracies[r]
             avg_losses_by_round[r] += node_losses[r]
         num_benign_nodes += 1
@@ -102,4 +102,3 @@ if __name__=='__main__':
     #     experiment_params = yaml.safe_load(f)
     # save_results(experiment_params)
     make_plot(18)
-
