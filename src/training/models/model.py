@@ -1,27 +1,25 @@
 import torch
 import os
-from training.device import resolve_device
+
 
 class BaseModel:
-    def __init__(self, num_samples: int, node_hash: int, epochs: int, batch_size: int, evaluating=False, device=None):
-        self.num_samples = num_samples
+    def __init__(self, 
+                 node_hash: int, 
+                 device):
         self.node_hash = node_hash
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.evaluating = evaluating
-        self.device = resolve_device(device)
-        self.data = None
-        self.X_train = None
-        self.X_valid = None
-        self.y_train = None
-        self.y_valid = None
+        self.device = device
         self.model = None
 
-
-    def train(self,dataset):
+    def train(self,
+            dataset,
+            epochs,
+            batch_size,
+            num_samples: int | None = None, 
+              ):
         raise NotImplementedError
     
-    def evaluate(self,dataset):
+    def evaluate(self,
+                 dataset):
         raise NotImplementedError
     
     def load_state_dict(self, state_dict):
