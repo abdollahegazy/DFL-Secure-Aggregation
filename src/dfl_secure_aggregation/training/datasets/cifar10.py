@@ -2,7 +2,10 @@ from torchvision import datasets, transforms
 from .databundle import DataBundle
 
 def load_cifar10(data_dir:str,
-                 transform: transforms.Compose | None = None,
+                 transform: transforms.Compose | None = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,), (0.5,)),
+    ]),
                 download=True) -> DataBundle:
     
     train = datasets.CIFAR10(

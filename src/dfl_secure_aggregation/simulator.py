@@ -1,22 +1,19 @@
 '''
 This file is the main entry point for the simulator. It sets up the server and runs the nodes.
 '''
-import argparse
-from network import graph
 import multiprocessing
 from multiprocessing import Manager
-import os
-import random
-import yaml
-from dfl_secure_aggregation.evaluation import save_node_metrics,save_results,make_plot
 import torch
 from torch.utils.data import Subset
-from training.trainers.model_loader import load_model_by_name
-from training.datasets.registry import load_dataset_by_name
-from dfl_secure_aggregation.aggregation import strategies
-from attack import attacks
 from pathlib import Path
 import shutil
+
+from dfl_secure_aggregation.evaluation import save_node_metrics,save_results,make_plot
+from dfl_secure_aggregation.aggregation import strategies
+from dfl_secure_aggregation.network import graph
+from dfl_secure_aggregation.training.datasets.registry import load_dataset_by_name
+from dfl_secure_aggregation.training.trainers.model_loader import load_model_by_name
+from dfl_secure_aggregation.attack import attacks
 
 def _train_worker_wrapper(args):
     trainer, worker_id = args
@@ -76,6 +73,7 @@ class DFLTrainer:
                  dataset_name,
                  dataset_kwargs,
                  params,
+                 results_dir,
                  device='cpu'):
         """
         Args:
@@ -94,7 +92,9 @@ class DFLTrainer:
             dataset (str): The dataset to use for training and evaluation.
             params (dict): The full experiment config loaded from YAML.
             device (str): The torch device to use for this simulation.
+            results_dir (Path): The directory to save simulation results.
         """
+
         self.num_nodes = num_nodes
         self.topology = topology
         self.num_workers = num_workers
@@ -114,12 +114,13 @@ class DFLTrainer:
         
         self.exp_id = exp_id
         self.exp_iteration = exp_iteration
-        self.dataset_name = dataset_name
-        self.dataset_kwargs = dataset_kwargs
-        self.dataset = None
+        self.train_dataset_name = dataset_name
+        self.train_dataset_kwargs = dataset_kwargs
+        self.train_dataset = None
         self.model = model
         self.device = resolve_device(device)
-        self.model_ckpt_dir = Path(params['model_ckpt_dir']) / f"experiment_{exp_id}" / f"replica-{exp_iteration}" / "nodes"
+        self.model_ckpt_dir = Path(params['model_ckpt_dir']) / f"{exp_id}" / f"replica-{exp_iteration}" / "nodes"
+        self.results_dir = results_dir
         self.current_round=0
 
         manager = Manager()
@@ -129,7 +130,13 @@ class DFLTrainer:
     def load_data(self):
         """Load the data for the simulation."""
         print('Loading data')
-        self.dataset = load_dataset_by_name(self.dataset_name, **self.dataset_kwargs)
+        bundle = load_dataset_by_name(self.train_dataset_name, **self.train_dataset_kwargs)
+        self.train_dataset = bundle.train
+        self.test_dataset = bundle.test
+        if bundle.val is not None:
+            self.val_dataset = bundle.val
+        else:
+            self.val_dataset = None
         
     def run(self):
         """
@@ -207,17 +214,17 @@ class DFLTrainer:
         if self.current_round>0:
             model.load_weights(weights_path)
         
-        if self.dataset is None: raise ValueError('Dataset not loaded')
+        if self.train_dataset is None: raise ValueError('Dataset not loaded')
 
         # TODO: reviewers might not want IID data in all nodes.
-        start_index = (node_hash*self.num_samples)% len(self.dataset)
+        start_index = (node_hash*self.num_samples)% len(self.train_dataset)
         end_index = start_index + self.num_samples
 
-        if end_index < len(self.dataset):
-            subset_dataset = Subset(self.dataset, list(range(start_index, end_index)))
+        if end_index < len(self.train_dataset):
+            subset_dataset = Subset(self.train_dataset, list(range(start_index, end_index)))
         else:
-            subset_dataset = Subset(self.dataset, list(range(start_index, len(self.dataset))))
-            subset_dataset += Subset(self.dataset, list(range(0, end_index%len(self.dataset))))
+            subset_dataset = Subset(self.train_dataset, list(range(start_index, len(self.train_dataset))))
+            subset_dataset += Subset(self.train_dataset, list(range(0, end_index%len(self.train_dataset))))
 
         model.train(
             dataset=subset_dataset,
@@ -234,8 +241,8 @@ class DFLTrainer:
 
         # save model in round+1 dir
         print('\nAggregating models')
-        round_dir = self.model_ckpt_dir / f'round_{self.current_round}'
-        print(f'Files in {round_dir}: {os.listdir(round_dir)}')
+        # round_dir = self.model_ckpt_dir / f'round_{self.current_round}'
+        # print(f'Files in {round_dir}: {os.listdir(round_dir)}')
         # malicious nodes should aggregate first
         # then benign nodes aggregate
         malicious = [n for n in self.node_idx if n in self.malicious_nodes]
@@ -303,7 +310,7 @@ class DFLTrainer:
 
         model.model.load_state_dict(state_dict)
         save_dir = self.model_ckpt_dir / f'round_{self.current_round + 1}'
-        os.makedirs(save_dir, exist_ok=True)
+        save_dir.mkdir(parents=True, exist_ok=True)
         model.save_weights(save_dir / f'node_{node_id}.pt')
 
     def _execute_attack(self, node_id):
@@ -350,14 +357,54 @@ class DFLTrainer:
             node_hash=node_id,
             device=self.device
         )  
+        is_malicious = node_id in self.malicious_nodes
 
-        accuracy, loss = model.evaluate(self.dataset)
+        accuracy, loss = model.evaluate(self.test_dataset)
         metrics_dict[self.current_round]['accuracy'] += accuracy
         metrics_dict[self.current_round]['loss'] += loss
         print(f'Node {node_id} round {self.current_round} accuracy: {accuracy} loss: {loss}')
-        save_node_metrics(node_id, accuracy, loss, self.exp_id, self.exp_iteration)
+        save_node_metrics(node_id, accuracy, loss, self.exp_id, self.exp_iteration, self.results_dir)
 
     # def __del__(self):
         # if getattr(self, "device", None) is not None and self.device.type == "cuda":
             # torch.cuda.empty_cache()
         # delete_files(self.exp_id, self.exp_iteration)
+
+
+
+
+def delete_files(exp_id, 
+                 iteration, 
+                 ckpt_base,
+                 results_base,
+                 remove_results=False,
+                 remove_all=False,
+            ):
+    """
+    Delete files in the models and core* files
+
+    Args:
+        exp_id (): The experiment id.
+        iteration (): The experiment iteration.
+        node_metrics (): Whether to delete node metrics json files.
+        remove_results (): Whether to delete result files.
+    """
+    if remove_all:
+        exp_dir_ckpt = Path(ckpt_base) / f"{exp_id}"
+        exp_dir_results = Path(results_base) / f"{exp_id}"
+        shutil.rmtree(exp_dir_ckpt, ignore_errors=True)
+        shutil.rmtree(exp_dir_results, ignore_errors=True)
+        return
+    
+    ckpt_dir = Path(ckpt_base) / f"{exp_id}" / f"replica-{iteration}" 
+    shutil.rmtree(ckpt_dir,ignore_errors=True)
+    # remove the dir itself if empty
+    if ckpt_dir.exists() and not any(ckpt_dir.iterdir()):
+        ckpt_dir.rmdir()
+
+    results_dir = Path(results_base) / f"{exp_id}" / f"replica-{iteration}"
+    # remove json
+    shutil.rmtree(results_dir, ignore_errors=True)
+    # remove the dir itself if empty
+    if results_dir.exists() and not any(results_dir.iterdir()):
+        results_dir.rmdir()

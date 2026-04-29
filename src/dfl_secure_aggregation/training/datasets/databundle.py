@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from torch.utils.data import Dataset
 
 @dataclass
-class DatasetBundle:
+class DataBundle:
     train: Dataset
     test: Dataset | None = None
     val: Dataset | None = None

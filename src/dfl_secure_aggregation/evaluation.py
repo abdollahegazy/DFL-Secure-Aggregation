@@ -2,16 +2,16 @@ import os
 import json
 import matplotlib.pyplot as plt
 
-def save_results(experiment_params):
+def save_results(experiment_params,results_dir):
     exp_id = experiment_params['id']
     iteration = experiment_params['iteration']
     
     experiment_desc = experiment_params['description']
-    save_dir = os.path.join('src','training','results', f'experiment_{exp_id}')
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    save_dir = results_dir / f"{exp_id}" / f"replica-{iteration}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
     try:
-        with open(os.path.join(save_dir,f'{exp_id}.json'),'r') as f:
+        with open(save_dir / f'{exp_id}.json', 'r') as f:
             results = json.load(f)
         print(f'Loaded results for experiment {exp_id}\n{experiment_desc}')
     except FileNotFoundError:
@@ -27,7 +27,8 @@ def save_results(experiment_params):
                                     'loss_by_round': []
                                     })
     # load all nodes metrics
-    node_metrics_dir = os.path.join('src','training','results',f'experiment_{exp_id}',f'{iteration}','node_metrics')
+    node_metrics_dir = results_dir / f"{exp_id}" / f"replica-{iteration}" / "node_metrics"
+    node_metrics_dir.mkdir(parents=True, exist_ok=True)
     avg_accuracies_by_round = [0]*experiment_params['rounds']
     avg_losses_by_round = [0]*experiment_params['rounds']
     num_benign_nodes = 0
@@ -42,21 +43,23 @@ def save_results(experiment_params):
         num_benign_nodes += 1
     results['experiments'][-1]['accuracies_by_round'] = [a/num_benign_nodes for a in avg_accuracies_by_round]
     results['experiments'][-1]['loss_by_round'] = [loss/num_benign_nodes for loss in avg_losses_by_round]
-    with open(os.path.join(save_dir,f'{exp_id}.json'),'w') as f:
-        json.dump(results, f)
-    print("Saved results to", os.path.join(save_dir,f'{exp_id}.json'))
+
+    with open(save_dir / f'{exp_id}.json', 'w') as f:
+        json.dump(results, f, indent=4)
+    print("Saved results to", save_dir / f'{exp_id}.json')
 
 
 
-def save_node_metrics(node_hash, accuracy, loss, exp_id, iteration):
+def save_node_metrics(node_hash, accuracy, loss, exp_id, iteration,results_dir):
     '''
     Save node metrics to a json file.
     '''
-    save_dir = os.path.join('src','training','results',f'experiment_{exp_id}',f'{iteration}','node_metrics')
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    save_dir = results_dir / f"{exp_id}" / f"replica-{iteration}" / "node_metrics"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    node_file = save_dir / f"{node_hash}.json"
+
     try:
-        with open(os.path.join(save_dir,f'{node_hash}.json'),'r') as f:
+        with open(node_file,'r') as f:
             results = json.load(f)
         print(f'Loaded results for node {node_hash}')
     except FileNotFoundError:
@@ -69,12 +72,12 @@ def save_node_metrics(node_hash, accuracy, loss, exp_id, iteration):
 
     results['accuracies'].append(accuracy)
     results['losses'].append(loss)
-    with open(os.path.join(save_dir,f'{node_hash}.json'),'w') as f:
-        json.dump(results, f)
-    print("Saved results to", os.path.join(save_dir,f'{node_hash}.json'))
+    with open(node_file,'w') as f:
+        json.dump(results, f,indent=4)
+    print("Saved results to", node_file)
 
-def make_plot(exp_id):
-    experiment_json_path = os.path.join('src','training','results',f'experiment_{exp_id}', f'{exp_id}.json')
+def make_plot(exp_id,iteration,results_dir):
+    experiment_json_path = results_dir / f"{exp_id}" / f"replica-{iteration}" / f'{exp_id}.json'
     with open(experiment_json_path,'r') as f:
         results = json.load(f)
 
@@ -86,19 +89,18 @@ def make_plot(exp_id):
         # experiment_params = results['experiments'][i]['params']
         byzantine_proportion = results['experiments'][i]['params']['malicious_proportion']
         topology = results['experiments'][i]['params']['topology']
-        plt.plot(range(1,len(accuracies_by_round)+1), accuracies_by_round, label=f'{topology} b={byzantine_proportion}', linestyle=line_type[topology], color=line_color[byzantine_proportion])
+        plt.plot(range(1,len(accuracies_by_round)+1), 
+                 accuracies_by_round, 
+                 label=f'{topology} b={byzantine_proportion}', 
+                 linestyle=line_type[topology], 
+                 color=line_color[byzantine_proportion],
+                 marker='o')
 
     plt.legend()
 
     plt.xlabel('Round')
     plt.ylabel('Accuracy')
     plt.title('Trimmed Mean Accuracy by Round \nStrategic Byzantine Placement')
-    plt.savefig(os.path.join('src','training','results',f'{exp_id}_accuracy_by_round.png'))
+    plt.savefig(results_dir / f'{exp_id}' / f"replica-{iteration}" / "accuracy_by_round.png")
 
     plt.clf()
-
-if __name__=='__main__':
-    # with open(os.path.join('src','config','experiment.yaml')) as f:
-    #     experiment_params = yaml.safe_load(f)
-    # save_results(experiment_params)
-    make_plot(18)

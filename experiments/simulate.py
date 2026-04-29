@@ -4,16 +4,23 @@ from torchvision import transforms
 import yaml
 import shutil 
 from dfl_secure_aggregation.network import graph
-from dfl_secure_aggregation .simulator import DFLTrainer
+from dfl_secure_aggregation .simulator import DFLTrainer,delete_files
 from dfl_secure_aggregation.evaluation import save_results, make_plot
-
+import random
 import torch
 import numpy as np
-rng = np.random.default_rng(seed=42)
 
-trainer = None
-active_params = None
 
+def seed_all(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    rng = np.random.default_rng(seed=42)
+    return rng
+
+
+np_rng = seed_all(42)
 
 def load_experiment_params(config_path):
     """
@@ -31,7 +38,7 @@ def save_params_snapshot(
     """
     Save the exact parameters used for this run beside the node metrics.
     """
-    save_dir = root_save_dir / f"experiment_{params['id']}" / f"{params['iteration']}"
+    save_dir = root_save_dir / f"{params['id']}" / f"replica-{params['iteration']}"
     save_dir.mkdir(parents=True, exist_ok=True)
     snapshot_path = save_dir / 'params.yaml'
     with open(snapshot_path, 'w') as f:
@@ -65,7 +72,7 @@ def run_simulation(params):
     if not params['use_saved_topology']:
         print(f'Creating topology with {num_nodes} nodes')
         
-        malicous_nodes = rng.choice(num_nodes, int(malicious_proportion*num_nodes), replace=False).tolist()
+        malicous_nodes = np_rng.choice(num_nodes, int(malicious_proportion*num_nodes), replace=False).tolist()
         print("Malicious nodes: ", malicous_nodes)
 
         if params['topology']=='random':
@@ -89,10 +96,11 @@ def run_simulation(params):
         print('Using saved topology')
 
     dataset_kwargs = params.get('dataset_kwargs', {})
-    dataset_kwargs['transform'] = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-    ])
+    # dataset_kwargs['transform'] = transforms.Compose([
+    #     transforms.ToTensor(),
+    #     transforms.Normalize((0.5,), (0.5,)),
+    # ])
+    results_dir = Path(params.get('results_dir', '../data/results'))
     dfl_trainer = DFLTrainer(num_nodes=num_nodes, 
                             topology=topology, 
                             num_workers=params['num_workers'], 
@@ -107,6 +115,7 @@ def run_simulation(params):
                             exp_iteration=params['iteration'],
                             dataset_name=params['dataset'],
                             dataset_kwargs=dataset_kwargs,
+                            results_dir=results_dir,
                             params=params,
                             device=params.get('device', 'cpu'))
 
@@ -114,17 +123,10 @@ def run_simulation(params):
     dfl_trainer.load_data()
     dfl_trainer.run()
 
-    save_results(params)
-    make_plot(exp_id)
 
-def signal_handler(sig, frame):
-    global trainer, active_params
-    if trainer is not None:
-        for p in getattr(trainer, "processes", []):
-            p.kill()
-        if getattr(trainer, "device", None) is not None and trainer.device.type == "cuda":
-            torch.cuda.empty_cache()
-    exit(0)
+    save_results(params, results_dir)
+    make_plot(exp_id,iteration=params['iteration'], results_dir=results_dir)
+
 
 def args_parser():
     parser = argparse.ArgumentParser(description='Run a DFL simulation from an explicit YAML config.')
@@ -139,9 +141,14 @@ if __name__=='__main__':
     print("Starting simulation with the following parameters:\n")
     print("Config:", args.config)
     print(experiment_params)
+    
+    ckpt_base = experiment_params.get('model_ckpt_dir', 'src/training/models')
+    results_base = Path(experiment_params.get('results_dir', 'data/results'))
 
-    # delete old expirement file
-    # delete_files(experiment_params['id'], experiment_params['iteration'], node_metrics=True)
-    save_params_snapshot(experiment_params, root_save_dir=Path('../data/results'))
+    delete_files(experiment_params['id'], experiment_params['iteration'], ckpt_base, results_base, remove_results=True,
+                 remove_all=True)
+
+
+    save_params_snapshot(experiment_params, results_base)
 
     run_simulation(experiment_params)

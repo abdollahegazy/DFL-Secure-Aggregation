@@ -1,13 +1,13 @@
-id: 990001
+id: 990002
 iteration: 0
-description: "config cli smoke test"
+description: "tiny cifar10 smoke test"
+
 use_saved_topology: false
-topology_file: "/tmp/dfl_config_smoke_topology.json"
+topology_file: "../data/topologies/smoke/small_world_cifar10.json"
 
 nodes: 4
-dataset: "mnist"
 num_workers: 1
-rounds: 1
+rounds: 2
 synchronous: true
 device: "cuda:2"
 
@@ -19,13 +19,21 @@ edge_density: 1.0
 
 malicious_proportion: 0.0
 attack_type: "noise"
-attack_args: {"strength": 10}
+attack_args:
+  strength: 10
 
 aggregation: "fedavg"
 trimmed_mean_beta: 0.2
 
-model_name: "digit_classifier"
-data_path: "src/training/data/loan_data.csv"
-num_samples: 2
+dataset: "cifar10"
+dataset_kwargs:
+  data_dir: "../data/datasets"
+  download: true
+
+model_ckpt_dir: "../data/ckpts"
+model_name: "cifar10"
+results_dir: "../data/results"
+
+num_samples: 8
 epochs_per_round: 1
-batch_size: 2
+batch_size: 4

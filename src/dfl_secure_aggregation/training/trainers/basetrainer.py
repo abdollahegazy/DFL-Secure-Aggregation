@@ -37,6 +37,6 @@ class BaseTrainer:
         if type(path) == str:
             path = Path(path)
         assert isinstance(path, Path) # for my linter to shut up
-        path.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
 
         torch.save(self.model.state_dict(), path)

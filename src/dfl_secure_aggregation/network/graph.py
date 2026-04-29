@@ -63,7 +63,7 @@ class Topology(networkx.Graph):
     def save(self, filename):
         # save as json
         with open(filename, 'w') as f:
-            json.dump(networkx.node_link_data(self), f)
+            json.dump(networkx.node_link_data(self), f,indent=4)
     
     def load(self, filename):
         with open(filename, 'r') as f:
