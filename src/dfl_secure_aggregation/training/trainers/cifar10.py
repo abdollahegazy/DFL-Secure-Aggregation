@@ -37,11 +37,10 @@ class CIFAR10Trainer(BaseTrainer):
                  optimizer_cls = torch.optim.AdamW,
                  optimizer_kwargs = {'lr': 0.001},
                  loss_fn = nn.CrossEntropyLoss()):
-        super().__init__(node_hash, device=device)
+        super().__init__(node_hash, device=device, optimizer_cls=optimizer_cls, optimizer_kwargs=optimizer_kwargs, loss_fn=loss_fn)
         self.model = Net().to(self.device)
         self.optimizer = optimizer_cls(self.model.parameters(), **optimizer_kwargs)
-        self.loss_fn = loss_fn
-
+        
     def train(self, 
               dataset,
               epochs,

@@ -72,7 +72,7 @@ class Topology(networkx.Graph):
         for node in data['nodes']:
             self.add_node(node['id'], malicious=node['malicious'])
             
-        for link in data['links']:
+        for link in data['edges']:
             self.add_edge(link['source'], link['target'])
     def draw(self):
         pos = None

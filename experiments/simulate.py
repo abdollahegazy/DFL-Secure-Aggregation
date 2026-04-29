@@ -146,7 +146,7 @@ if __name__=='__main__':
     results_base = Path(experiment_params.get('results_dir', 'data/results'))
 
     delete_files(experiment_params['id'], experiment_params['iteration'], ckpt_base, results_base, remove_results=True,
-                 remove_all=True)
+                 remove_all=False)
 
 
     save_params_snapshot(experiment_params, results_base)

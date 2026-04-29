@@ -1,8 +1,8 @@
-id: mnist_test
+id: 990002
 iteration: 0
-description: "tiny mnist smoke test"
+description: "tiny cifar10 smoke test"
 
-use_saved_topology: True
+use_saved_topology: false
 topology_file: "../data/topologies/smoke/small_world_cifar10.json"
 
 nodes: 4
@@ -25,13 +25,13 @@ attack_args:
 aggregation: "fedavg"
 trimmed_mean_beta: 0.2
 
-dataset: "mnist"
+dataset: "cifar10"
 dataset_kwargs:
   data_dir: "../data/datasets"
   download: true
 
 model_ckpt_dir: "../data/ckpts"
-model_name: "mnist"
+model_name: "cifar10"
 results_dir: "../data/results"
 
 num_samples: 8

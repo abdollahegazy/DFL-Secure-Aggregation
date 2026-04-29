@@ -6,11 +6,18 @@ from pathlib import Path
 
 class BaseTrainer:
     def __init__(self, 
-                 node_hash: int, 
-                 device):
+                node_hash: int, 
+                device,
+                optimizer_cls,
+                optimizer_kwargs,
+                loss_fn):
         self.node_hash = node_hash
         self.device = device
+        self.optimizer_cls = optimizer_cls
+        self.optimizer_kwargs = optimizer_kwargs
+        self.loss_fn = loss_fn
         self.model = None
+
 
     def train(self,
             dataset,

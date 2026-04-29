@@ -1,8 +1,8 @@
-from .digit_classifier import DigitClassifier
+from .digit_classifier import MNISTTrainer
 from .cifar10 import CIFAR10Trainer
 
 MODEL_REGISTRY = {
-    "mnist": DigitClassifier,
+    "mnist": MNISTTrainer,
     "cifar10": CIFAR10Trainer,
 }
 

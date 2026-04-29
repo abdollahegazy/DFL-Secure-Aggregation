@@ -169,20 +169,6 @@ class DFLTrainer:
                 shutil.rmtree(prev_dir)
             self.current_round+=1
 
-    def run_tasks(self, processes):
-        for p in processes:
-            p.start()
-
-        self.processes = processes
-
-        for p in processes:
-            p.join()
-
-        # kill all processes just in case
-        for p in processes:
-            p.terminate()
-        self.processes = []
-
 
     def train_network(self):
         """
@@ -302,16 +288,11 @@ class DFLTrainer:
         else:
             return torch.load(self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{node_id}.pt', weights_only=True)
 
-    def _save_model_for_next_round(self,
-        node_id, 
-        state_dict):
-        model = load_model_by_name(self.model)
-        model = model(node_hash=node_id, device=self.device)
 
-        model.model.load_state_dict(state_dict)
+    def _save_model_for_next_round(self, node_id, state_dict):
         save_dir = self.model_ckpt_dir / f'round_{self.current_round + 1}'
         save_dir.mkdir(parents=True, exist_ok=True)
-        model.save_weights(save_dir / f'node_{node_id}.pt')
+        torch.save(state_dict, save_dir / f'node_{node_id}.pt')
 
     def _execute_attack(self, node_id):
         neighbors = self.topology.get_neighbors(node_id)
@@ -319,11 +300,9 @@ class DFLTrainer:
         attack_args = dict(self.attack_args)
         attack_args['defense'] = self.aggregation_method.lower()
         attack_args['device'] = self.device
-        attack_args['nodes'] = len(neighbors) 
-        attack_args['malicious_nodes'] = len([n for n in neighbors if self.topology.nodes[n]['malicious']])
+        # attack_args['nodes'] = len(neighbors) 
 
-        attacker = attacks.create_attacker(attack_type, attack_args, node_id
-        )
+        attacker = attacks.create_attacker(attack_type, attack_args, node_id)
 
         model_path = Path(self.model_ckpt_dir) / f'round_{self.current_round}' / f'node_{node_id}.pt'
 
@@ -334,7 +313,6 @@ class DFLTrainer:
             node_hash=node_id,
             device=self.device
         )
-        model.model.load_state_dict(torch.load(model_path, weights_only=True))
 
         if attack_type == 'alie':
             benign_paths = [self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{n}.pt'
@@ -350,14 +328,14 @@ class DFLTrainer:
     def _evaluate_and_log(self,
      node_id, 
      metrics_dict):
-        model_path = self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{node_id}.pt'
+        model_path = self.model_ckpt_dir / f'round_{self.current_round + 1}' / f'node_{node_id}.pt'
         model = load_model_and_weights(
             model_name=self.model,
             model_path=model_path,
             node_hash=node_id,
             device=self.device
         )  
-        is_malicious = node_id in self.malicious_nodes
+        # is_malicious = node_id in self.malicious_nodes
 
         accuracy, loss = model.evaluate(self.test_dataset)
         metrics_dict[self.current_round]['accuracy'] += accuracy
