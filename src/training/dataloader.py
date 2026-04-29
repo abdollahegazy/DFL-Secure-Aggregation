@@ -1,6 +1,6 @@
 from torchvision import datasets, transforms
 
-def load_data(dataset_name: str):
+def load_data_by_name(dataset_name: str):
     print("Received dataset name: ", dataset_name)
     if dataset_name == 'mnist':
         return load_mnist()

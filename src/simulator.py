@@ -10,7 +10,7 @@ import yaml
 import evaluation
 import torch
 from torch.utils.data import Subset
-from training.models.model_loader import load_model
+from training.models.model_loader import load_model_by_name
 from training.dataloader import load_data_by_name
 from aggregation import strategies
 import time
@@ -43,6 +43,7 @@ class DFLTrainer:
                  num_samples, 
                  aggregation_method, 
                  attack_method, 
+                 model,
                  exp_id=experiment_params['id'], 
                  exp_iteration=experiment_params['iteration'],
                  dataset=experiment_params['dataset']):
@@ -57,6 +58,7 @@ class DFLTrainer:
             num_samples (int): The number of samples to use for training each node.
             aggregation_method (str): The method to use for aggregation.
             attack_method (str): The method to use for attacks.
+            model (str): The model architecture to use for training.
             exp_id (str): The experiment id.
             exp_iteration (str): The experiment iteration.
             dataset (str): The dataset to use for training and evaluation.
@@ -65,7 +67,6 @@ class DFLTrainer:
         self.topology = topology
         self.num_workers = num_workers
         self.num_rounds = num_rounds
-        self.dataset = dataset
         self.epochs_per_round = epochs_per_round
         self.batch_size = batch_size
         self.num_samples = num_samples
@@ -79,7 +80,8 @@ class DFLTrainer:
         self.exp_id = exp_id
         self.exp_iteration = exp_iteration
         self.dataset_name = dataset
-        
+        self.dataset = None
+        self.model = model
 
         self.models_base_dir = os.path.join('src','training','models', 
                                             f'experiment_{self.exp_id}', f'{self.exp_iteration}','nodes')
@@ -156,142 +158,143 @@ class DFLTrainer:
         """
         print(f'Training model for node {node_hash} round {self.current_round}')
         # create model
-        model = load_model(self.dataset_name)(epochs=self.epochs_per_round, batch_size=self.batch_size, num_samples=self.num_samples, 
-                         node_hash=node_hash,
-                         evaluating=False)
+        model_architecture = load_model_by_name(self.model)
+        model = model_architecture(epochs=self.epochs_per_round, batch_size=self.batch_size, num_samples=self.num_samples,
+                         node_hash=node_hash, evaluating=False)
+        
         if self.current_round>0:
             model.load_model(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt'))
-    
+        
+        if self.dataset is None: raise ValueError('Dataset not loaded')
+
+        # TODO: reviewers might not want IID data in all nodes.
         start_index = (node_hash*self.num_samples)% len(self.dataset)
         end_index = start_index + self.num_samples
-        # print(f'Node {node_hash} training on samples {start_index} to {end_index}')
+
         if end_index < len(self.dataset):
             subset_dataset = Subset(self.dataset, list(range(start_index, end_index)))
         else:
             subset_dataset = Subset(self.dataset, list(range(start_index, len(self.dataset))))
             subset_dataset += Subset(self.dataset, list(range(0, end_index%len(self.dataset))))
+
         model.train(subset_dataset)
     
         # save model in current round dir
         filename = os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt')
         model.save_model(filename)
         print("Saved model for node ", node_hash, "to", filename)
+
     def aggregate_network(self):
+
         # save model in round+1 dir
         print('\nAggregating models')
 
         # malicious nodes should aggregate first
-        for idx in range(0, len(self.nodes), self.num_workers):
-            worker_hashes = [num for num in self.nodes[idx:idx+self.num_workers] \
-                                if num<len(self.nodes) and num in self.malicious_nodes]
-            if len(worker_hashes)==0:
-                continue
-            
-            print("Malicous worker hashes: ", worker_hashes)
-            processes = []
-            for worker in worker_hashes:
-                p = multiprocessing.Process(target=self.aggregate_worker, args=(worker, self.metrics_dict))
-                processes.append(p)
-            self.run_tasks(processes)
+        # then benign nodes aggregate
+        malicious = [n for n in self.node_idx if n in self.malicious_nodes]
+        benign = [n for n in self.node_idx if n not in self.malicious_nodes]
 
-        # benign nodes aggregate
-        for idx in range(0, len(self.nodes), self.num_workers):
-            worker_hashes = [num for num in self.nodes[idx:idx+self.num_workers] \
-                             if num<len(self.nodes) and num not in self.malicious_nodes]
-            if len(worker_hashes)==0:
-                continue
-
-            print("Benign worker hashes: ", worker_hashes)
-            processes = []
-            for worker in worker_hashes:
-                p = multiprocessing.Process(target=self.aggregate_worker, args=(worker, self.metrics_dict))
-                processes.append(p)
-            self.run_tasks(processes)
-
-        time.sleep(.5)
+        with multiprocessing.Pool(processes=self.num_workers) as pool:
+            if malicious:
+                pool.starmap(self.aggregate_worker, [(n, self.metrics_dict) for n in malicious])
+            pool.starmap(self.aggregate_worker, [(n, self.metrics_dict) for n in benign])
         
 
-    
-    def aggregate_worker(self, node_hash, metrics_dict):
+    def aggregate_worker(self, node_id, metrics_dict):
         """
-        Aggregate the models on a worker.
+        Aggregate the models for a single node.
 
         Args:
-            worker (int): The worker number.
-            metrics_dict (dict): A dictionary to store the metrics.
-        Returns:
-            None
+            node_id (int): The node id.
+            metrics_dict (dict): A dictionary to store the metrics for each round.
         """
-        neighbors = self.topology.get_neighbors(node_hash)
-        is_malicous = self.topology.nodes[node_hash]['malicious']
-        if not is_malicous:
-            model_paths = [os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{neighbor}.pt') 
-                        for neighbor in neighbors]
-            model_paths.append(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt'))
-        else:
-            model_paths = [os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{neighbor}.pt')\
-                           for neighbor in neighbors if not self.topology.nodes[neighbor]['malicious']]
-        if (not is_malicous and len(model_paths)>1) or (is_malicous and len(model_paths)>0):
-            agg_args = {'f': len(model_paths), 
-                        'm': len([neighbor for neighbor in neighbors if self.topology.nodes[neighbor]['malicious']]),
-                        'trimmed_mean_beta': experiment_params['trimmed_mean_beta']}
-            aggregator = strategies.create_aggregator(node_hash, agg_args)
-            print("Node ", node_hash, "aggregating")
-            aggregated_model = aggregator.aggregate(model_paths)
-            print("Node ", node_hash, "aggregation complete")
-        else:
-            # use current model
-            aggregated_model = torch.load(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt'), weights_only=True)
-
-        device = torch.device('cpu')
-        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-            device = torch.device(f'cuda:{node_hash % torch.cuda.device_count()}')
-        elif torch.backends.mps.is_available():
-            device = torch.device('mps')
-        # load model
-        model = load_model(self.dataset_name)(epochs=self.epochs_per_round, batch_size=self.batch_size, num_samples=self.num_samples,
-                            node_hash=node_hash, evaluating=True,
-                            device = device)
+        aggregated_model = self._aggregate_models(node_id)
+        self._save_model_for_next_round(node_id, aggregated_model)
         
-        model.model.load_state_dict(aggregated_model)
-
-        # save model for next round
-        save_dir = os.path.join(self.models_base_dir, f'round_{self.current_round+1}')
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-        model.save_model(os.path.join(save_dir, f'node_{node_hash}.pt'))
-        print("Saved model for node ", node_hash, "to", os.path.join(save_dir, f'node_{node_hash}.pt'))
-        # if malicious, dont evaluate. Instead, attack the model
-        if self.topology.nodes[node_hash]['malicious']:
-            #attacker
-            attack_type =experiment_params['attack_type'].lower()
-            attack_args = experiment_params['attack_args']
-            attack_args['defense'] = experiment_params['aggregation'].lower()
-            neighbors = self.topology.get_neighbors(node_hash)
-            attack_args['nodes'] = len(neighbors)
-            attack_args['malicious_nodes'] = len([neighbor for neighbor in neighbors if self.topology.nodes[neighbor]['malicious']])
-            attacker = attacks.create_attacker(attack_type, attack_args, node_hash)
-            if attack_type=='alie':
-                print("starting attack alie")
-                poisoned_model = attacker.attack(model_paths)
-            else:
-                print("starting attack")
-                poisoned_model = attacker.attack(model.model.state_dict())
-            #save the model in current round dir
-            model.model.load_state_dict(poisoned_model)
-            model.save_model(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt'))
+        if node_id in self.malicious_nodes:
+            self._execute_attack(node_id)
         else:
-            # evaluate model on whole dataset
-            start_index = 0
-            end_index = len(self.dataset)
-            subset_dataset = Subset(self.dataset, list(range(start_index, end_index)))
-            accuracy, loss = model.evaluate(subset_dataset)
-            metrics_dict[self.current_round]['accuracy'] += accuracy 
-            metrics_dict[self.current_round]['loss'] += loss
-            print(f'Node {node_hash} round {self.current_round} accuracy: {accuracy} loss: {loss}')
-            # save to node metrics json
-        
-            evaluation.save_node_metrics(node_hash, accuracy, loss, self.exp_id, self.exp_iteration)
+            self._evaluate_and_log(node_id, metrics_dict)
+
+
+    def _aggregate_models(self, node_id):
+        neighbors = self.topology.get_neighbors(node_id)
+        is_malicious = node_id in self.malicious_nodes
+
+        if not is_malicious:
+            model_paths = [os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{n}.pt')
+                        for n in neighbors]
+            model_paths.append(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_id}.pt'))
+        else:
+            model_paths = [os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{n}.pt')
+                        for n in neighbors if not self.topology.nodes[n]['malicious']]
+
+        should_aggregate = (not is_malicious and len(model_paths) > 1) or (is_malicious and len(model_paths) > 0)
+
+        if should_aggregate:
+            agg_args = {
+                'f': len(model_paths),
+                'm': len([n for n in neighbors if self.topology.nodes[n]['malicious']]),
+                'trimmed_mean_beta': experiment_params['trimmed_mean_beta']
+            }
+            aggregator = strategies.create_aggregator(node_id, agg_args)
+            return aggregator.aggregate(model_paths)
+        else:
+            return torch.load(
+                os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_id}.pt'),
+                weights_only=True
+            )
+
+    def _save_model_for_next_round(self, node_id, state_dict):
+        model = load_model_by_name(self.dataset_name)(
+            epochs=self.epochs_per_round, batch_size=self.batch_size,
+            num_samples=self.num_samples, node_hash=node_id, evaluating=True
+        )
+        model.model.load_state_dict(state_dict)
+        save_dir = os.path.join(self.models_base_dir, f'round_{self.current_round + 1}')
+        os.makedirs(save_dir, exist_ok=True)
+        model.save_model(os.path.join(save_dir, f'node_{node_id}.pt'))
+
+    def _execute_attack(self, node_id):
+        neighbors = self.topology.get_neighbors(node_id)
+        attack_type = experiment_params['attack_type'].lower()
+        attack_args = experiment_params['attack_args']
+        attack_args['defense'] = experiment_params['aggregation'].lower()
+        attack_args['nodes'] = len(neighbors)
+        attack_args['malicious_nodes'] = len([n for n in neighbors if self.topology.nodes[n]['malicious']])
+
+        attacker = attacks.create_attacker(attack_type, attack_args, node_id)
+
+        model_path = os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_id}.pt')
+        model = load_model_by_name(self.dataset_name)(
+            epochs=self.epochs_per_round, batch_size=self.batch_size,
+            num_samples=self.num_samples, node_hash=node_id, evaluating=True
+        )
+        model.model.load_state_dict(torch.load(model_path, weights_only=True))
+
+        if attack_type == 'alie':
+            benign_paths = [os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{n}.pt')
+                            for n in neighbors if not self.topology.nodes[n]['malicious']]
+            poisoned_model = attacker.attack(benign_paths)
+        else:
+            poisoned_model = attacker.attack(model.model.state_dict())
+
+        model.model.load_state_dict(poisoned_model)
+        model.save_model(model_path)
+
+    def _evaluate_and_log(self, node_id, metrics_dict):
+        model_path = os.path.join(self.models_base_dir, f'round_{self.current_round + 1}', f'node_{node_id}.pt')
+        model = load_model_by_name(self.dataset_name)(
+            epochs=self.epochs_per_round, batch_size=self.batch_size,
+            num_samples=self.num_samples, node_hash=node_id, evaluating=True
+        )
+        model.model.load_state_dict(torch.load(model_path, weights_only=True))
+
+        accuracy, loss = model.evaluate(self.dataset)
+        metrics_dict[self.current_round]['accuracy'] += accuracy
+        metrics_dict[self.current_round]['loss'] += loss
+        print(f'Node {node_id} round {self.current_round} accuracy: {accuracy} loss: {loss}')
+        evaluation.save_node_metrics(node_id, accuracy, loss, self.exp_id, self.exp_iteration)
 
     def __del__(self):
         torch.cuda.empty_cache()
