@@ -131,6 +131,11 @@ def run_simulation(params):
 def args_parser():
     parser = argparse.ArgumentParser(description='Run a DFL simulation from an explicit YAML config.')
     parser.add_argument('--config', required=True, help='Path to the experiment YAML config.')
+    parser.add_argument(
+        '--force-reset',
+        action='store_true',
+        help='Delete existing checkpoints/results before running, even if resume is enabled.',
+    )
     args = parser.parse_args()
     return args
 
@@ -145,8 +150,12 @@ if __name__=='__main__':
     ckpt_base = experiment_params.get('model_ckpt_dir', 'src/training/models')
     results_base = Path(experiment_params.get('results_dir', 'data/results'))
 
-    delete_files(experiment_params['id'], experiment_params['iteration'], ckpt_base, results_base, remove_results=True,
-                 remove_all=False)
+    resume_enabled = bool(experiment_params.get('resume', False))
+    if args.force_reset or not resume_enabled:
+        delete_files(experiment_params['id'], experiment_params['iteration'], ckpt_base, results_base, remove_results=True,
+                    remove_all=False)
+    else:
+        print('Resume enabled; keeping existing checkpoints/results')
 
 
     save_params_snapshot(experiment_params, results_base)

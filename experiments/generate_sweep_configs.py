@@ -69,6 +69,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Directory where manifest.csv and configs/ will be written.",
     )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Device string to write into each generated YAML, for example cpu or cuda:0.",
+    )
     return parser.parse_args()
 
 
@@ -159,6 +164,7 @@ def placement_options(malicious_proportion: float) -> list[str]:
 def build_config(
     base_config: dict,
     sweep_id: str,
+    device: str,
     dataset: str,
     topology: str,
     aggregation: str,
@@ -179,6 +185,9 @@ def build_config(
     )
 
     config = copy.deepcopy(base_config)
+    checkpoint_config = copy.deepcopy(config.get("checkpoint", {}) or {})
+    checkpoint_config.setdefault("enabled", True)
+    checkpoint_config.setdefault("keep_last_rounds", 2)
     config.update(
         {
             "id": run_id,
@@ -203,7 +212,9 @@ def build_config(
             "malicious_proportion": malicious_proportion,
             "placement": placement,
             "attack_type": attack_type,
-            "device": "cuda:0",
+            "resume": config.get("resume", True),
+            "checkpoint": checkpoint_config,
+            "device": device,
             "num_workers": 1,
             "model_ckpt_dir": "../data/ckpts",
             "results_dir": "../data/results",
@@ -212,7 +223,7 @@ def build_config(
     return config
 
 
-def iter_configs(base_config: dict, sweep_id: str):
+def iter_configs(base_config: dict, sweep_id: str, device: str):
     for dataset in DATASETS:
         for topology in TOPOLOGIES:
             for aggregation in AGGREGATIONS:
@@ -223,6 +234,7 @@ def iter_configs(base_config: dict, sweep_id: str):
                                 config = build_config(
                                     base_config=base_config,
                                     sweep_id=sweep_id,
+                                    device=device,
                                     dataset=dataset,
                                     topology=topology,
                                     aggregation=aggregation,
@@ -234,7 +246,7 @@ def iter_configs(base_config: dict, sweep_id: str):
                                 yield config
 
 
-def write_outputs(base_config: dict, sweep_id: str, output_dir: Path) -> tuple[int, int, int, int]:
+def write_outputs(base_config: dict, sweep_id: str, output_dir: Path, device: str) -> tuple[int, int, int, int]:
     configs_dir = output_dir / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -248,7 +260,7 @@ def write_outputs(base_config: dict, sweep_id: str, output_dir: Path) -> tuple[i
         writer = csv.DictWriter(f, fieldnames=MANIFEST_COLUMNS)
         writer.writeheader()
 
-        for task_id, config in enumerate(iter_configs(base_config, sweep_id)):
+        for task_id, config in enumerate(iter_configs(base_config, sweep_id, device)):
             config_path = configs_dir / f"{task_id:04d}.yaml"
             with config_path.open("w") as config_file:
                 yaml.safe_dump(config, config_file, sort_keys=False)
@@ -316,6 +328,7 @@ def main() -> None:
         base_config=base_config,
         sweep_id=args.sweep_id,
         output_dir=args.output_dir,
+        device=args.device,
     )
     print(f"Wrote {total_count} configs to {args.output_dir / 'configs'}")
     print(f"Wrote manifest to {args.output_dir / 'manifest.csv'}")
