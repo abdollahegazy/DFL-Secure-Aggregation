@@ -16,11 +16,9 @@ def seed_all(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    rng = np.random.default_rng(seed=42)
+    rng = np.random.default_rng(seed=seed)
     return rng
 
-
-np_rng = seed_all(42)
 
 def load_experiment_params(config_path):
     """
@@ -65,6 +63,8 @@ def run_simulation(params):
     num_nodes = params['nodes']
     malicious_proportion = params['malicious_proportion']
     exp_id = params['id']
+    seed = params.get('seed', 42 + params['iteration'])
+    np_rng = seed_all(seed)
 
     topology = graph.Topology()
     topology_file = params['topology_file']

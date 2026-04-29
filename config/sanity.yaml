@@ -4,7 +4,7 @@ description: reproduce paper baseline - no Byzantine, small-world, FedAvg
 use_saved_topology: false
 topology_file: ../data/topologies/sanity/small_world_128.json
 nodes: 128
-num_workers: 8
+num_workers: 16
 rounds: 30
 synchronous: true
 device: cuda:2
