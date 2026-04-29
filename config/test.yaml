@@ -1,0 +1,31 @@
+id: 990001
+iteration: 0
+description: "config cli smoke test"
+use_saved_topology: false
+topology_file: "/tmp/dfl_config_smoke_topology.json"
+
+nodes: 4
+dataset: "mnist"
+num_workers: 1
+rounds: 1
+synchronous: true
+device: "cuda:2"
+
+topology: "small-world"
+small_world_k: 2
+small_world_beta: 0.0
+scale_free_m: 1
+edge_density: 1.0
+
+malicious_proportion: 0.0
+attack_type: "noise"
+attack_args: {"strength": 10}
+
+aggregation: "fedavg"
+trimmed_mean_beta: 0.2
+
+model_name: "digit_classifier"
+data_path: "src/training/data/loan_data.csv"
+num_samples: 2
+epochs_per_round: 1
+batch_size: 2
