@@ -1,5 +1,5 @@
 
-from .model import BaseModel
+from .basetrainer import BaseTrainer
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -37,7 +37,7 @@ class Net(nn.Module):
         x = self.fc2(x)
         output = F.log_softmax(x, dim=1)
         return output
-class DigitClassifier(BaseModel):
+class DigitClassifier(BaseTrainer):
     def __init__(self, epochs: int, batch_size: int, num_samples: int, 
                  node_hash: int, evaluating=False, device=None):
         super().__init__(num_samples, node_hash, epochs, batch_size, evaluating=evaluating, device=device)
