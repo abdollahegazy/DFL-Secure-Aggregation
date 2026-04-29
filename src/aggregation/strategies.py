@@ -2,12 +2,11 @@ import torch
 import numpy as np
 import yaml
 import os
+from training.device import resolve_device
 
 experiment_yaml = os.path.join('src','config', 'experiment.yaml')
 with open(experiment_yaml) as f:
     experiment_params = yaml.safe_load(f)
-device = None
-
 def create_aggregator(node_hash, agg_args: dict = {}):
     """
     Create an aggregator based on the aggregator type.
@@ -18,11 +17,9 @@ def create_aggregator(node_hash, agg_args: dict = {}):
     Returns:
         Aggregator: An aggregator object.
     """
-    global device
     global experiment_params
-    aggregator_type = experiment_params['aggregation']
-    num_gpus = torch.cuda.device_count()
-    device = torch.device('cuda:' + str(node_hash % num_gpus) if num_gpus > 0 else 'cpu')
+    aggregator_type = agg_args.get('aggregation', experiment_params['aggregation'])
+    device = resolve_device(agg_args.get('device', 'cpu'))
     if aggregator_type == 'fedavg':
         return FedAvg(device=device)
     elif aggregator_type == 'median':
@@ -30,17 +27,17 @@ def create_aggregator(node_hash, agg_args: dict = {}):
     elif aggregator_type == 'krum':
         return Krum(device=device)
     elif aggregator_type == 'trimmedmean':
-        return TrimmedMean(trimmed_mean_beta=agg_args.get("trimmed_mean_beta", 0.2))
+        return TrimmedMean(trimmed_mean_beta=agg_args.get("trimmed_mean_beta", 0.2), device=device)
     elif aggregator_type == 'geomed':
         return GeoMed(device=device)
     elif aggregator_type == 'multikrum':
-        return MultiKrum(f=agg_args.get("f", None), m=agg_args.get("m", None))
+        return MultiKrum(f=agg_args.get("f", None), m=agg_args.get("m", None), device=device)
     else:
         raise ValueError(f"Aggregator type {aggregator_type} not recognized")
 class Aggregator:
     def __init__(self,  **kwargs):
         self.kwargs = kwargs
-        self.device = kwargs.get("device", "cpu")
+        self.device = resolve_device(kwargs.get("device", "cpu"))
 class FedAvg(Aggregator):
     """
     Source: https://github.com/enriquetomasmb/fedstellar/blob/main/fedstellar/learning/aggregators
@@ -76,7 +73,7 @@ class FedAvg(Aggregator):
         for model_path in models_paths:
             model = torch.load(model_path, map_location=self.device)
             if accum is None:
-                accum = {layer: torch.zeros_like(param).to(device) for layer, param in model.items()}
+                accum = {layer: torch.zeros_like(param).to(self.device) for layer, param in model.items()}
             for layer in accum:
                 accum[layer] += model[layer]
             del model
@@ -166,12 +163,12 @@ class Median(Aggregator):
         print("[Median.aggregate] Aggregating models: num={}".format(len(model_paths)))
 
         model = torch.load(model_paths[0], map_location=self.device)
-        accum = {layer: torch.zeros_like(param).to(device) for layer, param in model.items()}
+        accum = {layer: torch.zeros_like(param).to(self.device) for layer, param in model.items()}
  
 
             
         for layer in accum:
-            weight_layer = accum[layer].to(device)
+            weight_layer = accum[layer].to(self.device)
             # get the shape of layer tensor
             l_shape = list(weight_layer.shape)
 
@@ -190,7 +187,7 @@ class Median(Aggregator):
 
                 # flatten the tensor of each model put all on the same device
                 #models_layer_weight_flatten = torch.stack([models_params[j][layer].to(device).view(number_layer_weights) for j in range(0, total_models)], 0)
-                models_layer_weight_flatten = torch.stack([torch.load(model_paths[j], weights_only=True,map_location=self.device)[layer].to(device).view(number_layer_weights) for j in range(0, total_models)], 0)
+                models_layer_weight_flatten = torch.stack([torch.load(model_paths[j], weights_only=True,map_location=self.device)[layer].to(self.device).view(number_layer_weights) for j in range(0, total_models)], 0)
                 # get the weight list [w1j,w2j,··· ,wmj], where wij is the jth parameter of the ith local model
                 median = self.get_median(models_layer_weight_flatten)
                 accum[layer] = median.view(l_shape)
@@ -227,7 +224,7 @@ class Krum(Aggregator):
         # Create a Zero Model
         print("Loading to device", self.device)
         model = torch.load(model_paths[0], map_location=self.device,weights_only=True)
-        accum = {layer: torch.zeros_like(param).to(device) for layer, param in model.items()}
+        accum = {layer: torch.zeros_like(param).to(self.device) for layer, param in model.items()}
 
         # Add weighteds models
         print("[Krum.aggregate] Aggregating models: num={}".format(len(model_paths)))
@@ -249,10 +246,10 @@ class Krum(Aggregator):
                     distance = 0
                 else:
                     for layer in m1:
-                        l1 = m1[layer].to(device)
+                        l1 = m1[layer].to(self.device)
                         # l1 = l1.view(len(l1), 1)
 
-                        l2 = m2[layer].to(device)
+                        l2 = m2[layer].to(self.device)
                         # l2 = l2.view(len(l2), 1)
                         
                         distance += torch.linalg.norm(l1 - l2)
@@ -266,8 +263,8 @@ class Krum(Aggregator):
         # Assign the model with min distance with others as the aggregated model
         m = torch.load(model_paths[min_index], map_location=self.device,weights_only=True)
         for layer in m:
-            accum[layer]=accum[layer].to(device)
-            accum[layer] = accum[layer] + m[layer].to(device)
+            accum[layer]=accum[layer].to(self.device)
+            accum[layer] = accum[layer] + m[layer].to(self.device)
             
         return accum
 class GeoMed:
@@ -279,6 +276,7 @@ class GeoMed:
         self.maxiter = kwargs.get("maxiter", 100)
         self.eps= kwargs.get("eps", 1e-6)
         self.ftol = kwargs.get("ftol", 1e-10)
+        self.device = resolve_device(kwargs.get("device", "cpu"))
 
     def aggregate(self, model_paths):
         # Check if there are models to aggregate
@@ -339,7 +337,7 @@ def torch_full_partition(tensor, start, end):
     # print("Sorting", tensor.shape, "start", start, "end", end)
     tensor = torch.sort(tensor, axis=0).values
     #print("Sorted tensor", tensor)
-    trimmed = torch.tensor(tensor[start:end])
+    trimmed = tensor[start:end].clone()
      #print("Trimmed tensor", trimmed)
     return trimmed
 class TrimmedMean(Aggregator):
@@ -412,7 +410,6 @@ class TrimmedMean(Aggregator):
 
         # Create a Zero Model
         # accum = (models[-1][0]).copy()
-        self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         model = torch.load(model_paths[0],weights_only=True, map_location=self.device)
         accum = {layer: torch.zeros_like(param).to(self.device) for layer, param in model.items()}
 
@@ -538,6 +535,7 @@ class MultiKrum:
         self.kwargs = kwargs
         self.f = kwargs.get("f", 1)
         self.m = kwargs.get("m", 1)
+        self.device = resolve_device(kwargs.get("device", "cpu"))
     def aggregate(self, model_paths: list):
         if len(model_paths) == 0:
             print("[MultiKrum] Trying to aggregate models when there are no models")

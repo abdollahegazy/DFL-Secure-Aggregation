@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import Subset
 from training.models.model_loader import load_model_by_name
 from training.dataloader import load_data_by_name
+from training.device import resolve_device
 from aggregation import strategies
 import time
 from attack import attacks
@@ -46,7 +47,8 @@ class DFLTrainer:
                  model,
                  exp_id=experiment_params['id'], 
                  exp_iteration=experiment_params['iteration'],
-                 dataset=experiment_params['dataset']):
+                 dataset=experiment_params['dataset'],
+                 device=experiment_params.get('device', 'cpu')):
         """
         Args:
             num_nodes (int): The number of nodes in the network.
@@ -62,6 +64,7 @@ class DFLTrainer:
             exp_id (str): The experiment id.
             exp_iteration (str): The experiment iteration.
             dataset (str): The dataset to use for training and evaluation.
+            device (str): The torch device to use for this simulation.
         """
         self.num_nodes = num_nodes
         self.topology = topology
@@ -82,6 +85,7 @@ class DFLTrainer:
         self.dataset_name = dataset
         self.dataset = None
         self.model = model
+        self.device = resolve_device(device)
 
         self.models_base_dir = os.path.join('src','training','models', 
                                             f'experiment_{self.exp_id}', f'{self.exp_iteration}','nodes')
@@ -109,6 +113,7 @@ class DFLTrainer:
         print(f'Number of samples: {self.num_samples}')
         print(f'Aggregation method: {self.aggregation_method}')
         print(f'Attack method: {self.attack_method}')
+        print(f'Device: {self.device}')
 
         for round_num in range(self.num_rounds):
             print(f'\n\tStarting round {round_num}')
@@ -160,7 +165,7 @@ class DFLTrainer:
         # create model
         model_architecture = load_model_by_name(self.model)
         model = model_architecture(epochs=self.epochs_per_round, batch_size=self.batch_size, num_samples=self.num_samples,
-                         node_hash=node_hash, evaluating=False)
+                         node_hash=node_hash, evaluating=False, device=self.device)
         
         if self.current_round>0:
             model.load_model(os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_hash}.pt'))
@@ -235,7 +240,9 @@ class DFLTrainer:
             agg_args = {
                 'f': len(model_paths),
                 'm': len([n for n in neighbors if self.topology.nodes[n]['malicious']]),
-                'trimmed_mean_beta': experiment_params['trimmed_mean_beta']
+                'trimmed_mean_beta': experiment_params['trimmed_mean_beta'],
+                'aggregation': self.aggregation_method,
+                'device': self.device,
             }
             aggregator = strategies.create_aggregator(node_id, agg_args)
             return aggregator.aggregate(model_paths)
@@ -246,9 +253,9 @@ class DFLTrainer:
             )
 
     def _save_model_for_next_round(self, node_id, state_dict):
-        model = load_model_by_name(self.dataset_name)(
+        model = load_model_by_name(self.model)(
             epochs=self.epochs_per_round, batch_size=self.batch_size,
-            num_samples=self.num_samples, node_hash=node_id, evaluating=True
+            num_samples=self.num_samples, node_hash=node_id, evaluating=True, device=self.device
         )
         model.model.load_state_dict(state_dict)
         save_dir = os.path.join(self.models_base_dir, f'round_{self.current_round + 1}')
@@ -257,18 +264,19 @@ class DFLTrainer:
 
     def _execute_attack(self, node_id):
         neighbors = self.topology.get_neighbors(node_id)
-        attack_type = experiment_params['attack_type'].lower()
-        attack_args = experiment_params['attack_args']
-        attack_args['defense'] = experiment_params['aggregation'].lower()
+        attack_type = self.attack_method.lower()
+        attack_args = dict(experiment_params['attack_args'])
+        attack_args['defense'] = self.aggregation_method.lower()
+        attack_args['device'] = self.device
         attack_args['nodes'] = len(neighbors)
         attack_args['malicious_nodes'] = len([n for n in neighbors if self.topology.nodes[n]['malicious']])
 
         attacker = attacks.create_attacker(attack_type, attack_args, node_id)
 
         model_path = os.path.join(self.models_base_dir, f'round_{self.current_round}', f'node_{node_id}.pt')
-        model = load_model_by_name(self.dataset_name)(
+        model = load_model_by_name(self.model)(
             epochs=self.epochs_per_round, batch_size=self.batch_size,
-            num_samples=self.num_samples, node_hash=node_id, evaluating=True
+            num_samples=self.num_samples, node_hash=node_id, evaluating=True, device=self.device
         )
         model.model.load_state_dict(torch.load(model_path, weights_only=True))
 
@@ -284,9 +292,9 @@ class DFLTrainer:
 
     def _evaluate_and_log(self, node_id, metrics_dict):
         model_path = os.path.join(self.models_base_dir, f'round_{self.current_round + 1}', f'node_{node_id}.pt')
-        model = load_model_by_name(self.dataset_name)(
+        model = load_model_by_name(self.model)(
             epochs=self.epochs_per_round, batch_size=self.batch_size,
-            num_samples=self.num_samples, node_hash=node_id, evaluating=True
+            num_samples=self.num_samples, node_hash=node_id, evaluating=True, device=self.device
         )
         model.model.load_state_dict(torch.load(model_path, weights_only=True))
 
@@ -297,7 +305,8 @@ class DFLTrainer:
         evaluation.save_node_metrics(node_id, accuracy, loss, self.exp_id, self.exp_iteration)
 
     def __del__(self):
-        torch.cuda.empty_cache()
+        if getattr(self, "device", None) is not None and self.device.type == "cuda":
+            torch.cuda.empty_cache()
         delete_files(self.exp_id, self.exp_iteration)
         
 def delete_files(exp_id, iteration, node_metrics=False):
@@ -387,7 +396,9 @@ def run_simulation(params):
                              num_samples=params['num_samples'],
                              aggregation_method=params['aggregation'], 
                              attack_method=params['attack_type'], 
-                             dataset=params['dataset'])
+                             model=params.get('model_name', params['dataset']),
+                             dataset=params['dataset'],
+                             device=params.get('device', 'cpu'))
 
 
     trainer = dfl_trainer
@@ -402,7 +413,8 @@ def signal_handler(sig, frame):
     if trainer is not None:
         for p in trainer.processes:
             p.kill()
-    torch.cuda.empty_cache()
+        if getattr(trainer, "device", None) is not None and trainer.device.type == "cuda":
+            torch.cuda.empty_cache()
     delete_files(experiment_params['id'], experiment_params['iteration'])
     exit(0)
 

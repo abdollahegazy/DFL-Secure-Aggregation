@@ -1,10 +1,8 @@
 import torch
-from skimage.util import random_noise
 from collections import OrderedDict
 import copy
-import math
+from training.device import resolve_device
 
-device=None
 class SignFlip:
     def __init__(self, attack_args: dict):
         # flipped model will go in opposite direction as the normally trained model
@@ -24,6 +22,7 @@ class Noise():
     """
     def __init__(self, attack_args: dict):
         self.strength = attack_args['strength']
+        self.device = resolve_device(attack_args.get('device', 'cpu'))
 
 
     def attack(self, model: OrderedDict):
@@ -37,8 +36,8 @@ class Noise():
         for k in lkeys:
             #print(f"Layer noised: {k}")
             # adding noise with mu =0, sigma=1 * strength
-            model[k] = model[k].to(device)
-            model[k].data += torch.randn(model[k].shape).to(device) * self.strength 
+            model[k] = model[k].to(self.device)
+            model[k].data += torch.randn(model[k].shape, device=self.device) * self.strength 
             
         return model
 
@@ -48,6 +47,7 @@ class RandomNoise():
     """
     def __init__(self, attack_args: dict):
         self.strength = attack_args['strength']
+        self.device = resolve_device(attack_args.get('device', 'cpu'))
         print(f"[NoiseInjectionAttack] Initialized with strength: {self.strength}")
 
     def attack(self, model: OrderedDict):
@@ -57,7 +57,7 @@ class RandomNoise():
         for k in lkeys:
             #print(f"Layer noised: {k}")
             # adding noise with mu =strength, sigma=1 * strength
-            random_model[k] = torch.randn(random_model[k].shape).to(device) * self.strength
+            random_model[k] = torch.randn(random_model[k].shape, device=self.device) * self.strength
         return random_model
 
 class ALittleIsEnough:
@@ -66,14 +66,13 @@ class ALittleIsEnough:
         https://github.com/lishenghui/blades/blob/master/blades/adversaries/alie_adversary.py
         '''
         print(f"[ALIE] Initialized with args {attack_args}")
+        self.device = resolve_device(attack_args.get('device', 'cpu'))
         num_nodes = attack_args['nodes']
         num_byz = attack_args['malicious_nodes']
 
-        #s = torch.floor_divide(num_nodes, 2) + 1 - num_byz 
-        # torch.floor_divide is deprecated. use torch.div 
-        s = torch.div(num_nodes, 2, rounding_mode='trunc') + 1 - num_byz
-        cdf_value = (num_nodes - num_byz - s) / (num_nodes - num_byz)
-        dist = torch.distributions.normal.Normal(torch.tensor(0.0), torch.tensor(1.0))
+        s = num_nodes // 2 + 1 - num_byz
+        cdf_value = torch.tensor((num_nodes - num_byz - s) / (num_nodes - num_byz), device=self.device)
+        dist = torch.distributions.normal.Normal(torch.tensor(0.0, device=self.device), torch.tensor(1.0, device=self.device))
         self.z_max = dist.icdf(cdf_value)
     def attack(self, model_paths: list):
         '''
@@ -89,14 +88,14 @@ class ALittleIsEnough:
         poisoned_model = None
         std_model = None
         for model_path in model_paths:
-            model = torch.load(model_path, map_location=device)
+            model = torch.load(model_path, map_location=self.device)
             if poisoned_model is None:
-                poisoned_model = {name: torch.zeros_like(param).to(device) for name, param in model.items()}
-                std_model = {name: torch.zeros_like(param).to(device) for name, param in model.items()}
+                poisoned_model = {name: torch.zeros_like(param).to(self.device) for name, param in model.items()}
+                std_model = {name: torch.zeros_like(param).to(self.device) for name, param in model.items()}
             
             for layer in model:
-                poisoned_model[layer] += model[layer].to(device)
-                std_model[layer] += model[layer].to(device)**2
+                poisoned_model[layer] += model[layer].to(self.device)
+                std_model[layer] += model[layer].to(self.device)**2
 
         for layer in poisoned_model:
             poisoned_model[layer] /= len(model_paths)
@@ -154,9 +153,6 @@ class ALittleIsEnough:
     
 
 def create_attacker(attack_type, attack_args, node_hash):
-    global device
-    num_gpus = torch.cuda.device_count()
-    device = 'cuda:' + str(node_hash % num_gpus) if num_gpus > 0 else 'cpu'
     attack_type = attack_type.lower()
     if attack_type == 'noise':
         return Noise(attack_args)
