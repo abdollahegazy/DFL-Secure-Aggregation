@@ -26,10 +26,10 @@ class BaseModel:
             self.device = torch.device('cpu')
 
 
-    def train(self):
+    def train(self,dataset):
         raise NotImplementedError
     
-    def evaluate(self):
+    def evaluate(self,dataset):
         raise NotImplementedError
     
     def load_state_dict(self, state_dict):

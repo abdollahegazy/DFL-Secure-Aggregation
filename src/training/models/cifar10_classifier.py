@@ -8,6 +8,7 @@ from .model import BaseModel
 '''
 https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html
 '''
+
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
@@ -34,12 +35,12 @@ class CIFAR10Classifier(BaseModel):
         self.model = Net().to(self.device)
         print("Sent {} node's model to device: {}".format(self.node_hash, self.device))
 
-    def train(self, subset_dataset):
-        X_train = DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True)
+    def train(self, dataset):
+        X_train = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
         self.model.train()
-        for epoch in range(self.epochs):
+        for _ in range(self.epochs):
             for i, data in enumerate(X_train, 0):
                 # get the inputs; data is a list of [inputs, labels]
                 inputs, labels = data
