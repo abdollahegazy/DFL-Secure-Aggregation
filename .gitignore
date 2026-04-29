@@ -171,3 +171,5 @@ cython_debug/
 src/training/results/*.png
 data/
 src/training/results/
+.vscode/
+configg/

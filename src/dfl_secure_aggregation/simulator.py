@@ -11,8 +11,8 @@ import yaml
 from dfl_secure_aggregation.evaluation import save_node_metrics,save_results,make_plot
 import torch
 from torch.utils.data import Subset
-from training.models.model_loader import load_model_by_name
-from training.dataloader import load_data_by_name
+from training.trainers.model_loader import load_model_by_name
+from training.datasets.registry import load_dataset_by_name
 from dfl_secure_aggregation.aggregation import strategies
 from attack import attacks
 from pathlib import Path
@@ -57,8 +57,6 @@ def resolve_device(device=None):
         return torch.device("cpu")
 
     return torch.device(device)
-
-
 
 
 class DFLTrainer:
@@ -361,7 +359,17 @@ class DFLTrainer:
         # if getattr(self, "device", None) is not None and self.device.type == "cuda":
             # torch.cuda.empty_cache()
         # delete_files(self.exp_id, self.exp_iteration)
-        
+
+
+
+
+
+
+
+
+
+
+
 def delete_files(exp_id, iteration, node_metrics=False):
     """
     Delete files in the models and core* files
