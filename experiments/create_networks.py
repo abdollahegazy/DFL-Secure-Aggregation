@@ -1,4 +1,4 @@
-from network import graph
+from dfl_secure_aggregation.network import graph
 import random
 
 random.seed(0)
