@@ -11,7 +11,7 @@ import evaluation
 import torch
 from torch.utils.data import Subset
 from training.models.model_loader import load_model
-from training.dataloader import load_data
+from training.dataloader import load_data_by_name
 from aggregation import strategies
 import time
 from attack import attacks
@@ -25,10 +25,42 @@ with open(experiment_yaml) as f:
     experiment_params = yaml.safe_load(f)
 
 
+def _train_worker_wrapper(args):
+    trainer, worker_id = args
+    trainer.train_worker(worker_id)
+
+
+
+
 class DFLTrainer:
-    def __init__(self, num_nodes, topology, num_workers, num_rounds, epochs_per_round, batch_size,
-                 num_samples, aggregation_method, attack_method, exp_id=experiment_params['id'], exp_iteration=experiment_params['iteration'],
+    def __init__(self, 
+                 num_nodes, 
+                 topology, 
+                 num_workers, 
+                 num_rounds, 
+                 epochs_per_round, 
+                 batch_size,
+                 num_samples, 
+                 aggregation_method, 
+                 attack_method, 
+                 exp_id=experiment_params['id'], 
+                 exp_iteration=experiment_params['iteration'],
                  dataset=experiment_params['dataset']):
+        """
+        Args:
+            num_nodes (int): The number of nodes in the network.
+            topology (graph.Topology): The topology of the network.
+            num_workers (int): The number of workers to use for training and aggregation.
+            num_rounds (int): The number of rounds to run the simulation for.
+            epochs_per_round (int): The number of epochs to train for each round.
+            batch_size (int): The batch size to use for training.
+            num_samples (int): The number of samples to use for training each node.
+            aggregation_method (str): The method to use for aggregation.
+            attack_method (str): The method to use for attacks.
+            exp_id (str): The experiment id.
+            exp_iteration (str): The experiment iteration.
+            dataset (str): The dataset to use for training and evaluation.
+        """
         self.num_nodes = num_nodes
         self.topology = topology
         self.num_workers = num_workers
@@ -40,15 +72,15 @@ class DFLTrainer:
         self.aggregation_method = aggregation_method
         self.attack_method = attack_method
 
-        self.nodes = list(range(self.num_nodes))
-        self.malicious_nodes = set(node_hash for node_hash in self.nodes if \
+        self.node_idx = list(range(self.num_nodes))
+        self.malicious_nodes = set(node_hash for node_hash in self.node_idx if \
                                  self.topology.nodes[node_hash]['malicious'])
         
         self.exp_id = exp_id
         self.exp_iteration = exp_iteration
-        
-        
         self.dataset_name = dataset
+        
+
         self.models_base_dir = os.path.join('src','training','models', 
                                             f'experiment_{self.exp_id}', f'{self.exp_iteration}','nodes')
         self.current_round=0
@@ -58,9 +90,9 @@ class DFLTrainer:
         self.metrics_dict = manager.dict(metrics_dict)
         
     def load_data(self):
-        """ Load the data for the simulation. """
+        """Load the data for the simulation."""
         print('Loading data')
-        self.dataset = load_data(self.dataset_name)
+        self.dataset = load_data_by_name(self.dataset_name)
         
     def run(self):
         """
@@ -85,8 +117,7 @@ class DFLTrainer:
             self.aggregate_network()
 
             # delete files from current round
-
-            # prob TODO: add some checkpoint flagg to the yaml to avoid this
+            # TODO: add some checkpoint flagg to the yaml to avoid this
             if self.current_round>0:
                 prev_dir = os.path.join(self.models_base_dir, f'round_{self.current_round-1}')
                 for file in os.listdir(prev_dir):
@@ -101,32 +132,27 @@ class DFLTrainer:
 
         for p in processes:
             p.join()
+
         # kill all processes just in case
         for p in processes:
             p.terminate()
         self.processes = []
+
 
     def train_network(self):
         """
         Train the models on each node in parallel.
         """
         print('Training models')
-        for idx in range(0,self.num_nodes, self.num_workers):
-            worker_hashes = [num for num in range(idx, idx+self.num_workers) if num<self.num_nodes]
-            processes = []
-            for worker in worker_hashes:
-                p = multiprocessing.Process(target=self.train_worker, args=(worker,))
-                processes.append(p)
-            self.run_tasks(processes)
+        with multiprocessing.Pool(processes=self.num_workers) as pool:
+            pool.map(_train_worker_wrapper, [(self, i) for i in range(self.num_nodes)])
+            
     def train_worker(self, node_hash):
         """
-        Train a model for a worker.
+        Train a model for a single node.
 
         Args:
-            worker (int): The worker number.
-
-        Returns:
-            None
+            node_hash (int): The node hash. It's rlly a node idx but too lazy to change variable name.
         """
         print(f'Training model for node {node_hash} round {self.current_round}')
         # create model
@@ -270,6 +296,7 @@ class DFLTrainer:
     def __del__(self):
         torch.cuda.empty_cache()
         delete_files(self.exp_id, self.exp_iteration)
+        
 def delete_files(exp_id, iteration, node_metrics=False):
     """
     Delete files in the models and core* files
