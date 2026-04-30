@@ -169,7 +169,13 @@ class Median(Aggregator):
             number_layer_weights = torch.numel(weight_layer)
             # if its 0-d tensor
             if l_shape == []:
-                weights = torch.tensor([torch.load(model_paths[j], weights_only=True)[layer] for j in range(0, total_models)])
+                weights = torch.tensor(
+                    [
+                        torch.load(model_paths[j], weights_only=True, map_location=self.device)[layer]
+                        for j in range(0, total_models)
+                    ],
+                    device=self.device,
+                )
                 weights = weights.double()
                 w = self.get_median(weights)
                 accum[layer] = w

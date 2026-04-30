@@ -2,7 +2,7 @@
 This file is the main entry point for the simulator. It sets up the server and runs the nodes.
 '''
 import multiprocessing
-from multiprocessing import Manager
+import json
 import torch
 from torch.utils.data import Subset
 from pathlib import Path
@@ -14,6 +14,8 @@ from dfl_secure_aggregation.network import graph
 from dfl_secure_aggregation.training.datasets.registry import load_dataset_by_name
 from dfl_secure_aggregation.training.trainers.model_loader import load_model_by_name
 from dfl_secure_aggregation.attack import attacks
+
+import multiprocessing
 
 def _train_worker_wrapper(args):
     trainer, worker_id = args
@@ -30,6 +32,20 @@ def load_model_and_weights(
         model.load_weights(model_path)
     model.model.to(device)
     return model
+
+
+_trainer = None
+
+def _init_worker(trainer):
+    global _trainer
+    _trainer = trainer
+
+def _train_worker_fn(node_id):
+    _trainer.train_worker(node_id)
+
+def _agg_worker_fn(args):
+    node_id, metrics_dict = args
+    _trainer.aggregate_worker(node_id, metrics_dict)
 
 
 def resolve_device(device=None):
@@ -121,11 +137,17 @@ class DFLTrainer:
         self.device = resolve_device(device)
         self.model_ckpt_dir = Path(params['model_ckpt_dir']) / f"{exp_id}" / f"replica-{exp_iteration}" / "nodes"
         self.results_dir = results_dir
+        self.run_results_dir = self.results_dir / f"{self.exp_id}" / f"replica-{self.exp_iteration}"
+        checkpoint_params = params.get('checkpoint', {}) or {}
+        self.resume = bool(params.get('resume', False))
+        self.checkpoint_enabled = bool(checkpoint_params.get('enabled', self.resume))
+        default_keep_rounds = 2 if self.checkpoint_enabled else 1
+        self.keep_last_rounds = int(checkpoint_params.get('keep_last_rounds', default_keep_rounds))
+        self.state_path = self.run_results_dir / 'state.json'
         self.current_round=0
 
-        manager = Manager()
         metrics_dict = {round_num: {'accuracy': 0, 'loss': 0} for round_num in range(self.num_rounds)}
-        self.metrics_dict = manager.dict(metrics_dict)
+        self.metrics_dict = metrics_dict
         
     def load_data(self):
         """Load the data for the simulation."""
@@ -152,31 +174,166 @@ class DFLTrainer:
         print(f'Aggregation method: {self.aggregation_method}')
         print(f'Attack method: {self.attack_method}')
         print(f'Device: {self.device}')
+        print(f'Resume enabled: {self.resume}')
+        print(f'Checkpoint enabled: {self.checkpoint_enabled}')
 
-        for round_num in range(self.num_rounds):
+        start_round = self._resume_start_round()
+        if start_round >= self.num_rounds:
+            print(f'Run already complete through round {self.num_rounds - 1}')
+            self.current_round = self.num_rounds
+            return
+        self._cleanup_work_dirs()
+
+        for round_num in range(start_round, self.num_rounds):
+            self.current_round = round_num
             print(f'\n\tStarting round {round_num}')
-            # train models
-            round_path = self.model_ckpt_dir / f'round_{round_num}'
-            round_path.mkdir(parents=True, exist_ok=True)
+            self._prepare_round(round_num)
 
             self.train_network()
             self.aggregate_network()
 
-            # delete files from current round
-            # TODO: add some checkpoint flagg to the yaml to avoid this
-            if self.current_round>0:
-                prev_dir = self.model_ckpt_dir / f'round_{self.current_round-1}'
-                shutil.rmtree(prev_dir)
-            self.current_round+=1
+            self._mark_round_completed(round_num)
+            self._cleanup_after_round(round_num)
+
+        self.current_round = self.num_rounds
+
+    def _stable_round_dir(self, round_num):
+        return self.model_ckpt_dir / f'round_{round_num}'
+
+    def _work_round_dir(self, round_num):
+        return self.model_ckpt_dir / f'work_round_{round_num}'
+
+    def _stable_model_path(self, round_num, node_id):
+        return self._stable_round_dir(round_num) / f'node_{node_id}.pt'
+
+    def _trained_model_path(self, round_num, node_id):
+        return self._work_round_dir(round_num) / f'node_{node_id}.pt'
+
+    def _round_has_all_models(self, round_num):
+        return all(self._stable_model_path(round_num, node_id).exists() for node_id in self.node_idx)
+
+    def _load_state(self):
+        if not self.state_path.exists():
+            return {'last_completed_round': -1}
+        with open(self.state_path) as f:
+            return json.load(f)
+
+    def _resume_start_round(self):
+        if not self.resume:
+            return 0
+
+        state = self._load_state()
+        last_completed_round = int(state.get('last_completed_round', -1))
+        start_round = last_completed_round + 1
+
+        if start_round > 0 and not self._round_has_all_models(start_round):
+            raise RuntimeError(
+                f"Checkpoint state says round {last_completed_round} completed, "
+                f"but stable weights for round {start_round} are missing in {self._stable_round_dir(start_round)}"
+            )
+
+        if start_round > 0:
+            print(f"Resuming from round {start_round}")
+        return start_round
+
+    def _prepare_round(self, round_num):
+        work_dir = self._work_round_dir(round_num)
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        incomplete_next_round = self._stable_round_dir(round_num + 1)
+        if incomplete_next_round.exists():
+            shutil.rmtree(incomplete_next_round)
+
+    def _cleanup_work_dirs(self):
+        for work_dir in self.model_ckpt_dir.glob('work_round_*'):
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _mark_round_completed(self, round_num):
+        if not self._round_has_all_models(round_num + 1):
+            raise RuntimeError(f"Round {round_num} did not produce all node checkpoints")
+
+        if not self.checkpoint_enabled:
+            return
+
+        self.run_results_dir.mkdir(parents=True, exist_ok=True)
+        state = {
+            'checkpoint_version': 1,
+            'last_completed_round': round_num,
+            'next_round': round_num + 1,
+            'num_rounds': self.num_rounds,
+            'num_nodes': self.num_nodes,
+        }
+        tmp_path = self.state_path.with_suffix('.tmp')
+        with open(tmp_path, 'w') as f:
+            json.dump(state, f, indent=4)
+        tmp_path.replace(self.state_path)
+
+    def _cleanup_after_round(self, round_num):
+        work_dir = self._work_round_dir(round_num)
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+
+        latest_stable_round = round_num + 1
+        keep_last_rounds = max(1, self.keep_last_rounds if self.checkpoint_enabled else 1)
+        oldest_round_to_keep = latest_stable_round - keep_last_rounds + 1
+
+        for round_dir in self.model_ckpt_dir.glob('round_*'):
+            try:
+                stable_round = int(round_dir.name.split('_', 1)[1])
+            except ValueError:
+                continue
+            if stable_round < oldest_round_to_keep:
+                shutil.rmtree(round_dir, ignore_errors=True)
 
 
     def train_network(self):
-        """
-        Train the models on each node in parallel.
-        """
         print('Training models')
-        with multiprocessing.Pool(processes=self.num_workers) as pool:
-            pool.map(_train_worker_wrapper, [(self, i) for i in range(self.num_nodes)])
+        if self.num_workers <= 1:
+            for node_id in range(self.num_nodes):
+                self.train_worker(node_id)
+            return
+
+        with multiprocessing.Pool(
+            processes=self.num_workers,
+            initializer=_init_worker,
+            initargs=(self,)
+        ) as pool:
+            pool.map(_train_worker_fn, range(self.num_nodes))
+
+    def aggregate_network(self):
+        print('\nAggregating models')
+        malicious = [n for n in self.node_idx if n in self.malicious_nodes]
+        benign = [n for n in self.node_idx if n not in self.malicious_nodes]
+
+        if self.num_workers <= 1:
+            for node_id in malicious:
+                self.aggregate_worker(node_id, self.metrics_dict)
+            for node_id in benign:
+                self.aggregate_worker(node_id, self.metrics_dict)
+            return
+
+        with multiprocessing.Pool(
+            processes=self.num_workers,
+            initializer=_init_worker,
+            initargs=(self,)
+        ) as pool:
+            if malicious:
+                pool.map(_agg_worker_fn, [(n, self.metrics_dict) for n in malicious])
+        pool.map(_agg_worker_fn, [(n, self.metrics_dict) for n in benign])
+    # def train_network(self):
+    #     """
+    #     Train the models on each node in parallel.
+    #     """
+    #     print('Training models')
+    #     if self.num_workers <= 1:
+    #         for node_id in range(self.num_nodes):
+    #             self.train_worker(node_id)
+    #         return
+
+    #     with multiprocessing.Pool(processes=self.num_workers) as pool:
+    #         pool.map(_train_worker_wrapper, [(self, i) for i in range(self.num_nodes)])
             
     def train_worker(self, node_hash):
         """
@@ -195,10 +352,12 @@ class DFLTrainer:
             node_hash=node_hash, 
             device=self.device)
         
-        weights_path = self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{node_hash}.pt'        
+        load_path = None
+        if self.current_round > 0:
+            load_path = self._stable_model_path(self.current_round, node_hash)
         
-        if self.current_round>0:
-            model.load_weights(weights_path)
+        if load_path is not None:
+            model.load_weights(load_path)
         
         if self.train_dataset is None: raise ValueError('Dataset not loaded')
 
@@ -220,24 +379,32 @@ class DFLTrainer:
             )
     
         # save model in current round dir
+        weights_path = self._trained_model_path(self.current_round, node_hash)
         model.save_weights(weights_path)
         print("Saved model for node ", node_hash, "to", weights_path)
 
-    def aggregate_network(self):
+    # def aggregate_network(self):
 
-        # save model in round+1 dir
-        print('\nAggregating models')
-        # round_dir = self.model_ckpt_dir / f'round_{self.current_round}'
-        # print(f'Files in {round_dir}: {os.listdir(round_dir)}')
-        # malicious nodes should aggregate first
-        # then benign nodes aggregate
-        malicious = [n for n in self.node_idx if n in self.malicious_nodes]
-        benign = [n for n in self.node_idx if n not in self.malicious_nodes]
+    #     # save model in round+1 dir
+    #     print('\nAggregating models')
+    #     # round_dir = self.model_ckpt_dir / f'round_{self.current_round}'
+    #     # print(f'Files in {round_dir}: {os.listdir(round_dir)}')
+    #     # malicious nodes should aggregate first
+    #     # then benign nodes aggregate
+    #     malicious = [n for n in self.node_idx if n in self.malicious_nodes]
+    #     benign = [n for n in self.node_idx if n not in self.malicious_nodes]
 
-        with multiprocessing.Pool(processes=self.num_workers) as pool:
-            if malicious:
-                pool.starmap(self.aggregate_worker, [(n, self.metrics_dict) for n in malicious])
-            pool.starmap(self.aggregate_worker, [(n, self.metrics_dict) for n in benign])
+    #     if self.num_workers <= 1:
+    #         for node_id in malicious:
+    #             self.aggregate_worker(node_id, self.metrics_dict)
+    #         for node_id in benign:
+    #             self.aggregate_worker(node_id, self.metrics_dict)
+    #         return
+
+    #     with multiprocessing.Pool(processes=self.num_workers) as pool:
+    #         if malicious:
+    #             pool.starmap(self.aggregate_worker, [(n, self.metrics_dict) for n in malicious])
+    #         pool.starmap(self.aggregate_worker, [(n, self.metrics_dict) for n in benign])
         
 
     def aggregate_worker(self, node_id, metrics_dict):
@@ -263,13 +430,13 @@ class DFLTrainer:
 
         # benign aggregates from everyone 
         if not is_malicious:
-            model_paths = [self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{n}.pt'
+            model_paths = [self._trained_model_path(self.current_round, n)
                         for n in neighbors]
 
-            model_paths.append(self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{node_id}.pt')
+            model_paths.append(self._trained_model_path(self.current_round, node_id))
         # but malicious only aggregates from benign to avoid poisoning themselves with other malicious nodes
         else:
-            model_paths = [self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{n}.pt'
+            model_paths = [self._trained_model_path(self.current_round, n)
                         for n in neighbors if not self.topology.nodes[n]['malicious']]
 
         # either benign with neighbor besides itself, or malicious with at least one neighbor
@@ -286,11 +453,15 @@ class DFLTrainer:
             aggregator = strategies.create_aggregator(node_id, agg_args)
             return aggregator.aggregate(model_paths)
         else:
-            return torch.load(self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{node_id}.pt', weights_only=True)
+            return torch.load(
+                self._trained_model_path(self.current_round, node_id),
+                weights_only=True,
+                map_location=self.device,
+            )
 
 
     def _save_model_for_next_round(self, node_id, state_dict):
-        save_dir = self.model_ckpt_dir / f'round_{self.current_round + 1}'
+        save_dir = self._stable_round_dir(self.current_round + 1)
         save_dir.mkdir(parents=True, exist_ok=True)
         torch.save(state_dict, save_dir / f'node_{node_id}.pt')
 
@@ -304,7 +475,7 @@ class DFLTrainer:
 
         attacker = attacks.create_attacker(attack_type, attack_args, node_id)
 
-        model_path = Path(self.model_ckpt_dir) / f'round_{self.current_round}' / f'node_{node_id}.pt'
+        model_path = self._trained_model_path(self.current_round, node_id)
 
         
         model = load_model_and_weights(
@@ -315,7 +486,7 @@ class DFLTrainer:
         )
 
         if attack_type == 'alie':
-            benign_paths = [self.model_ckpt_dir / f'round_{self.current_round}' / f'node_{n}.pt'
+            benign_paths = [self._trained_model_path(self.current_round, n)
                             for n in neighbors if not self.topology.nodes[n]['malicious']]
             poisoned_model = attacker.attack(benign_paths)
         else:
@@ -328,7 +499,7 @@ class DFLTrainer:
     def _evaluate_and_log(self,
      node_id, 
      metrics_dict):
-        model_path = self.model_ckpt_dir / f'round_{self.current_round + 1}' / f'node_{node_id}.pt'
+        model_path = self._stable_model_path(self.current_round + 1, node_id)
         model = load_model_and_weights(
             model_name=self.model,
             model_path=model_path,
@@ -341,7 +512,16 @@ class DFLTrainer:
         metrics_dict[self.current_round]['accuracy'] += accuracy
         metrics_dict[self.current_round]['loss'] += loss
         print(f'Node {node_id} round {self.current_round} accuracy: {accuracy} loss: {loss}')
-        save_node_metrics(node_id, accuracy, loss, self.exp_id, self.exp_iteration, self.results_dir)
+        save_node_metrics(
+            node_id,
+            accuracy,
+            loss,
+            self.exp_id,
+            self.exp_iteration,
+            self.results_dir,
+            round_num=self.current_round,
+            is_malicious=False,
+        )
 
     # def __del__(self):
         # if getattr(self, "device", None) is not None and self.device.type == "cuda":

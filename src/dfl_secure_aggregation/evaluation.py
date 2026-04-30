@@ -22,6 +22,11 @@ def save_results(experiment_params,results_dir):
         results['description'] = experiment_desc
         results['experiments'] = []
 
+    results['experiments'] = [
+        experiment
+        for experiment in results.get('experiments', [])
+        if experiment.get('params', {}).get('iteration') != iteration
+    ]
     results['experiments'].append({'params': experiment_params,
                                     'accuracies_by_round': [],
                                     'loss_by_round': []
@@ -38,9 +43,15 @@ def save_results(experiment_params,results_dir):
         node_accuracies = node_metrics['accuracies']
         node_losses = node_metrics['losses']
         for r in range(experiment_params['rounds']):
+            if r >= len(node_accuracies) or r >= len(node_losses):
+                raise ValueError(f"Missing round {r} metrics for node {node_hash_json}")
+            if node_accuracies[r] is None or node_losses[r] is None:
+                raise ValueError(f"Incomplete round {r} metrics for node {node_hash_json}")
             avg_accuracies_by_round[r] += node_accuracies[r]
             avg_losses_by_round[r] += node_losses[r]
         num_benign_nodes += 1
+    if num_benign_nodes == 0:
+        raise ValueError(f"No node metrics found in {node_metrics_dir}")
     results['experiments'][-1]['accuracies_by_round'] = [a/num_benign_nodes for a in avg_accuracies_by_round]
     results['experiments'][-1]['loss_by_round'] = [loss/num_benign_nodes for loss in avg_losses_by_round]
 
@@ -50,7 +61,15 @@ def save_results(experiment_params,results_dir):
 
 
 
-def save_node_metrics(node_hash, accuracy, loss, exp_id, iteration,results_dir):
+def save_node_metrics(
+        node_hash,
+        accuracy,
+        loss,
+        exp_id,
+        iteration,
+        results_dir,
+        round_num=None,
+        is_malicious=None):
     '''
     Save node metrics to a json file.
     '''
@@ -67,11 +86,24 @@ def save_node_metrics(node_hash, accuracy, loss, exp_id, iteration,results_dir):
         # create new results file
         results = {}
         results['node_hash'] = node_hash
+        results['is_malicious'] = is_malicious
         results['accuracies'] = []
         results['losses'] = []
 
-    results['accuracies'].append(accuracy)
-    results['losses'].append(loss)
+    if is_malicious is not None:
+        results['is_malicious'] = is_malicious
+
+    if round_num is None:
+        results['accuracies'].append(accuracy)
+        results['losses'].append(loss)
+    else:
+        while len(results['accuracies']) <= round_num:
+            results['accuracies'].append(None)
+        while len(results['losses']) <= round_num:
+            results['losses'].append(None)
+        results['accuracies'][round_num] = accuracy
+        results['losses'][round_num] = loss
+
     with open(node_file,'w') as f:
         json.dump(results, f,indent=4)
     print("Saved results to", node_file)

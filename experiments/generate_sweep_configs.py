@@ -215,7 +215,7 @@ def build_config(
             "resume": config.get("resume", True),
             "checkpoint": checkpoint_config,
             "device": device,
-            "num_workers": 1,
+            "num_workers": 8,
             "model_ckpt_dir": "../data/ckpts",
             "results_dir": "../data/results",
         }
