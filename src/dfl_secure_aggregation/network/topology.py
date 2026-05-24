@@ -40,8 +40,11 @@ class Topology:
         return self.adjacency() & ~self.malicious_mask.unsqueeze(0)
 
 
-    def candidate_masks(self) -> torch.Tensor:
-        """(N, N) row-stochastic mixing matrix encoding the malicious-aggregation rule.
+    def candidate_mask(self) -> torch.Tensor:
+        """
+        (N, N) bool. Row i: nodes that node i can aggregate from.
+        Encodes the malicious-aggregation rule and empty-set fallback.
+
         Row i:
         - benign:    1/|cand_i| over neighbors(i) U {i}
         - malicious: 1/|cand_i| over benign neighbors(i)
