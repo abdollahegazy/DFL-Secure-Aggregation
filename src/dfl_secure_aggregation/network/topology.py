@@ -38,3 +38,26 @@ class Topology:
         Adjacency with edges to malicious nodes zeroed out. 
         """
         return self.adjacency() & ~self.malicious_mask.unsqueeze(0)
+
+
+    def candidate_masks(self) -> torch.Tensor:
+        """(N, N) row-stochastic mixing matrix encoding the malicious-aggregation rule.
+        Row i:
+        - benign:    1/|cand_i| over neighbors(i) U {i}
+        - malicious: 1/|cand_i| over benign neighbors(i)
+        - empty cand (malicious with zero benign neighbors): self-loop, preserve own params
+        """
+        is_mal_row = self.malicious_mask.unsqueeze(1)  # (N, 1)
+
+        cand = torch.where(
+            is_mal_row,
+            self.benign_view_adjacency(),  # malicious rows
+            self.with_self_loops(),  # benign rows
+        )
+
+        # Fallback self-loop for any row with no candidates.
+        no_cand = ~cand.any(dim=1)
+        if no_cand.any():
+            eye = torch.eye(self.n, dtype=torch.bool, device=self.device)
+            cand = cand | (no_cand.unsqueeze(1) & eye)
+        return cand
