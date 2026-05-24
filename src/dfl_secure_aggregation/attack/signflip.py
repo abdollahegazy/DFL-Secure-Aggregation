@@ -1,11 +1,10 @@
-from typing import OrderedDict
+import torch
 
-class SignFlip:
-    def __init__(self, attack_args: dict):
-        # flipped model will go in opposite direction as the normally trained model
-        self.flipped_model = None
-    def attack(self, model: OrderedDict):
-        print("[SignFlippingAttack]")
-        for k in model:
-            model[k] = -model[k]
-        return model
+from ..network import Topology
+from ..nodebank import NodeBank
+
+def signflip(bank: NodeBank, topology: Topology):
+    """Flip the sign of the gradient."""
+    with torch.no_grad():
+        for v in bank.params.values():
+            v[topology.malicious_mask] = torch.neg(v[topology.malicious_mask])
