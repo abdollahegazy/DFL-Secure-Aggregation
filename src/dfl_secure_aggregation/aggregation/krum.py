@@ -58,9 +58,10 @@ def krum(
         scores = D.topk(k_smallest, dim=1, largest=False).values.sum(dim=1)  # (M,)
 
         if m_select is None:
-            n_winners = max(1, m -f) # paper does this i think
+            n_winners = 1 # normal krum
         else:
             n_winners = min(m_select, m-f) 
+        n_winners = max(1, n_winners)  # handle edge case where m-f <= 0
         winners_local = scores.topk(n_winners, largest=False).indices  # (n_winners,)
         winners_global = cand_idx[winners_local]  # (n_winners,)
 
