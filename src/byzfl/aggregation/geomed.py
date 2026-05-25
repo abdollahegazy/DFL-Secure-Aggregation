@@ -34,22 +34,62 @@ def _geomed_along_candidates(
         prev = curr
     return median
 
+
 @torch.no_grad()
 def geomed(
-    params: Dict[str, torch.Tensor],  # param_name -> (N, *param_shape)
+    params: Dict[str, torch.Tensor],
     topology: Topology,
     maxiter: int = 100,
     eps: float = 1e-6,
-    ftol: float = 1e-10,
+    ftol: float = 1e-10,  # kept for back-compat; unused in vectorized path
 ):
-    candidate_mask = topology.candidate_mask()
-    cand_indices = [candidate_mask[i].nonzero(as_tuple=False).squeeze(1) for i in range(topology.n)]
+    cand_padded, cand_mask = topology.cand_padded            # (N, M_max), (N, M_max)
+    N, M_max = cand_padded.shape
+    mask_f = cand_mask.float()                               # (N, M_max)
+    valid_counts = mask_f.sum(dim=1, keepdim=True)           # (N, 1)
 
-    new_params = {k: v.clone() for k, v in params.items()}
-    for i in range(topology.n):
-        for k, v in params.items():
-            new_params[k][i] = _geomed_along_candidates(v[cand_indices[i]], maxiter, eps, ftol)
+    new_params = {}
+    for k, v in params.items():
+        param_shape = v.shape[1:]
+        P = v[0].numel()
+        cands = v[cand_padded].reshape(N, M_max, P)          # (N, M_max, P)
+
+        # Initial median = mean over valid entries.
+        median = (mask_f.unsqueeze(-1) * cands).sum(dim=1) / valid_counts  # (N, P)
+
+        prev = torch.full((N,), float("inf"), device=v.device)
+        for _ in range(maxiter):
+            diff = cands - median.unsqueeze(1)               # (N, M_max, P)
+            dists = diff.norm(dim=2).clamp(min=eps)          # (N, M_max)
+            w = mask_f / dists                               # (N, M_max), invalid -> 0
+            median = (w.unsqueeze(-1) * cands).sum(dim=1) / w.sum(dim=1, keepdim=True)
+            curr = (mask_f * dists * w).sum(dim=1) / w.sum(dim=1)  # (N,)
+
+            rel = torch.abs(prev - curr) / curr.clamp_min(eps)
+            if rel.max() <= ftol:
+                break
+
+            prev = curr
+
+        new_params[k] = median.reshape((N,) + param_shape)
     return new_params
+
+
+# @torch.no_grad()
+# def geomed(
+#     params: Dict[str, torch.Tensor],  # param_name -> (N, *param_shape)
+#     topology: Topology,
+#     maxiter: int = 100,
+#     eps: float = 1e-6,
+#     ftol: float = 1e-10,
+# ):
+#     cand_indices = topology._cand_indices
+
+#     new_params = {k: v.clone() for k, v in params.items()}
+#     for i in range(topology.n):
+#         for k, v in params.items():
+#             new_params[k][i] = _geomed_along_candidates(v[cand_indices[i]], maxiter, eps, ftol)
+#     return new_params
 
 
 

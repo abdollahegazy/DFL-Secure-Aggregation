@@ -1,8 +1,10 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import torch
 from torch import Tensor
 
+
+from typing import Tuple
 
 def sliding_window_partition(
     n_dataset_samples: int,
@@ -41,6 +43,7 @@ class NodeDataLoader:
         batch_size: int,
         shuffle: bool = True,
         seed: int | None = None,
+        augment_fn: Callable[[Tensor, Tensor], Tuple[Tensor, Tensor]] | None = None,
     ):
         device = x.device
         self.x = x
@@ -48,6 +51,7 @@ class NodeDataLoader:
         self.node_indices = [idx.to(device) for idx in node_indices]
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.augment_fn = augment_fn
         self.generator = torch.Generator(device=device)
         if seed is not None:
             self.generator.manual_seed(seed)
@@ -65,7 +69,11 @@ class NodeDataLoader:
         B = self.batch_size
         for b in range(n_batches):
             batch_idx = torch.stack([p[b * B:(b + 1) * B] for p in pools])  # (N, B)
-            yield self.x[batch_idx], self.y[batch_idx]                       # (N, B, *), (N, B)
+            x_batch = self.x[batch_idx]                                      # (N, B, *)
+            y_batch = self.y[batch_idx]                                      # (N, B)
+            if self.augment_fn is not None:
+                x_batch, y_batch = self.augment_fn(x_batch, y_batch)
+            yield x_batch, y_batch
 
     def __len__(self) -> int:
         return min(idx.size(0) for idx in self.node_indices) // self.batch_size

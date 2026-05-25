@@ -7,10 +7,12 @@ Returns per-round metrics. Persistence (writing to disk) is the caller's job.
 from collections.abc import Callable, Iterable
 
 import torch
+import time
 
 from .nodebank import NodeBank
 from .network import Topology
 
+import torch.amp as amp
 
 def run_simulation(
     bank: NodeBank,
@@ -44,13 +46,17 @@ def run_simulation(
     """
     history: list[dict] = []
     train_iter = _cycle(train_minibatch_iter)
-
+    tprev = time.time()
     for r in range(num_rounds):
+
+        print(f"Round {r+1}/{num_rounds}...", end="")
         # 1. Train
         losses: list[torch.Tensor] = []
+        
         for _ in range(steps_per_round):
             x, y = next(train_iter)
-            losses.append(bank.train_step(x, y))
+            with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):
+                losses.append(bank.train_step(x, y))
         train_loss = torch.stack(losses).mean(dim=0)  # (N,)
 
         # 2. Attack (in-place mutation of bank.params, malicious rows only)
@@ -61,7 +67,7 @@ def run_simulation(
         bank.load_params(aggregate_fn(bank.params, topology))
 
         # 4. Evaluate
-        if r % eval_every == 0 or r == num_rounds - 1:
+        if (r+1) % eval_every == 0 or r == num_rounds - 1:
             metrics = _evaluate(bank, test_x, test_y, topology.malicious_mask, eval_batch_size)
             metrics["round"] = r
             metrics["train_loss_per_node"] = train_loss.detach().cpu()
@@ -69,8 +75,12 @@ def run_simulation(
             if log_metrics:
                 print(
                     f"[round {r:3d}] mean_benign_acc={metrics['mean_benign_acc']:.4f}  "
-                    f"train_loss(mean)={train_loss.mean().item():.4f}"
+                    f"train_loss(mean)={train_loss.mean().item():.4f}",end=""
                 )
+        torch.cuda.synchronize()  # for more accurate timing
+        tnow = time.time()
+        print(f"  time for round: {tnow - tprev:.1f}s")
+        tprev = tnow
 
     return history
 
@@ -101,7 +111,8 @@ def _evaluate(
         for start in range(0, test_x.shape[0], batch_size):
             xc = test_x[start:start + batch_size]
             yc = test_y[start:start + batch_size]
-            preds = bank.forward_shared(xc).argmax(dim=-1)    # (N, B), broadcasts x to all N nodes via vmap
+            with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):
+                preds = bank.forward_shared(xc).argmax(dim=-1)    # (N, B), broadcasts x to all N nodes via vmap
             correct += (preds == yc.unsqueeze(0)).sum(dim=1).float()
             total += xc.shape[0]
     per_node_acc = correct / max(total, 1)

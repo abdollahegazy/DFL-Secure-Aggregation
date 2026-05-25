@@ -47,17 +47,25 @@ class NodeBank:
             self.params.values(), **optimizer_kwargs
         )
 
+        self._forward_fn = vmap(self._functional_call, in_dims=(0, 0, 0))
+        self.compiled_forward = torch.compile(self._forward_fn,mode='reduce-overhead')
+        
+        self._forward_shared_fn = vmap(self._functional_call, in_dims=(0, 0, None))
+        self.compiled_forward_shared = torch.compile(self._forward_shared_fn,mode='reduce-overhead')
+
     def _functional_call(self, params, buffers, x):
         return functional_call(self.template, (params, buffers), (x,))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # slice across N for params, buffers, and inputs
-        return vmap(self._functional_call, in_dims=(0, 0, 0))(self.params, self.buffers, x)
+        return self.compiled_forward(self.params, self.buffers, x)
+        # return vmap(self._functional_call, in_dims=(0, 0, 0))(self.params, self.buffers, x)
 
     def forward_shared(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, *input). Returns (N, B, num_classes). All N nodes see the same x.
         Use for evaluation where the test set is shared, not per-node."""
-        return vmap(self._functional_call, in_dims=(0, 0, None))(self.params, self.buffers, x)
+        return self.compiled_forward_shared(self.params, self.buffers, x)
+        # return vmap(self._functional_call, in_dims=(0, 0, None))(self.params, self.buffers, x)
 
     def load_params(self,new_params: dict[str, torch.Tensor]):
 

@@ -4,7 +4,6 @@ from torch import Tensor
 
 from ..network import Topology
 
-
 @torch.no_grad()
 def fedavg(params: dict[str, Tensor], topology: Topology) -> dict[str, Tensor]:
     """Per-node weighted average over each node's candidate set.
@@ -14,12 +13,6 @@ def fedavg(params: dict[str, Tensor], topology: Topology) -> dict[str, Tensor]:
 
     Implemented as one matmul per parameter: new[k] = W @ params[k].flatten(1).
     """
-    W = _mixing_matrix(topology)
+    W = topology.mixing_matrix
     return {k: (W @ v.flatten(1)).reshape_as(v) for k, v in params.items()}
-
-
-def _mixing_matrix(topology: Topology) -> Tensor:
-    candidates = topology.candidate_mask()  # (N, N) bool
-    row_sums = candidates.sum(dim=1, keepdim=True).float()
-    return candidates.float() / row_sums
 

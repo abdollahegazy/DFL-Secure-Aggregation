@@ -24,9 +24,8 @@ def trimmedmean(
     beta: float = 0.2,
 ) -> Dict[str, Tensor]:
     """Per-node trimmed mean over each node's candidate set."""
-    cand_mask = topology.candidate_mask()
     n = topology.n
-    cand_indices = [cand_mask[i].nonzero(as_tuple=False).squeeze(1) for i in range(n)]
+    cand_indices = topology._cand_indices
     new_params = {k: v.clone() for k, v in params.items()}
     for i in range(n):
         for k, v in params.items():

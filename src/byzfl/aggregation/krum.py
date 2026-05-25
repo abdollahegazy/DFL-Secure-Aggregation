@@ -23,8 +23,8 @@ def krum(
     Multi-Krum (m_select>1): average the m_select lowest-scoring candidates.
     """
 
-    cand_mask = topology.candidate_mask()  # (N, N) bool
-    cand_indices = [cand_mask[i].nonzero(as_tuple=False).squeeze(1) for i in range(topology.n)]
+
+    cand_indices = topology._cand_indices
 
     new_params = {k: v.clone() for k, v in params.items()}
 
