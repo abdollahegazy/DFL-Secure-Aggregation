@@ -12,8 +12,6 @@ import time
 from .nodebank import NodeBank
 from .network import Topology
 
-import torch.amp as amp
-
 def run_simulation(
     bank: NodeBank,
     topology: Topology,
@@ -56,6 +54,7 @@ def run_simulation(
         
         for _ in range(steps_per_round):
             x, y = next(train_iter)
+
             with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):
                 losses.append(bank.train_step(x, y))
         train_loss = torch.stack(losses).mean(dim=0)  # (N,)
