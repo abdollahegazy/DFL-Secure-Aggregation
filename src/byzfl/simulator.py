@@ -113,6 +113,7 @@ def _evaluate(
             yc = test_y[start:start + batch_size]
             with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):
                 preds = bank.forward_shared(xc).argmax(dim=-1)    # (N, B), broadcasts x to all N nodes via vmap
+
             correct += (preds == yc.unsqueeze(0)).sum(dim=1).float()
             total += xc.shape[0]
     per_node_acc = correct / max(total, 1)
