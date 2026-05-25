@@ -53,6 +53,8 @@ class NodeBank:
         self._forward_shared_fn = vmap(self._functional_call, in_dims=(0, 0, None))
         self.compiled_forward_shared = torch.compile(self._forward_shared_fn,mode='reduce-overhead')
 
+        self.compiled_train_step = torch.compile(self._train_step, mode="reduce-overhead")
+
     def _functional_call(self, params, buffers, x):
         return functional_call(self.template, (params, buffers), (x,))
 
@@ -60,6 +62,16 @@ class NodeBank:
         # slice across N for params, buffers, and inputs
         return self.compiled_forward(self.params, self.buffers, x)
         # return vmap(self._functional_call, in_dims=(0, 0, 0))(self.params, self.buffers, x)
+
+
+    def _train_step(self, params, buffers, x, y):
+        logits = self._forward_fn(params, buffers, x)
+        per_node_loss = vmap(F.cross_entropy)(logits, y)
+        self.optimizer.zero_grad(set_to_none=True)
+        per_node_loss.sum().backward()
+        self.optimizer.step()
+        return per_node_loss
+
 
     def forward_shared(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, *input). Returns (N, B, num_classes). All N nodes see the same x.
@@ -76,10 +88,11 @@ class NodeBank:
     def train_step(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """One train step: vmap forward, per-node CE loss,  sum, backward, AdamW step.
         Returns per-node loss (N,)."""
-        logits = self.forward(x)  # (N, B, ?)
-        per_node_loss = vmap(F.cross_entropy)(logits, y)  # (N,)
-        self.optimizer.zero_grad()
-        per_node_loss.sum().backward()
-        self.optimizer.step()
-        return per_node_loss.detach()
+        return self.compiled_train_step(self.params, self.buffers, x, y).detach()
+        # logits = self.forward(x)  # (N, B, ?)
+        # per_node_loss = vmap(F.cross_entropy)(logits, y)  # (N,)
+        # self.optimizer.zero_grad()
+        # per_node_loss.sum().backward()
+        # self.optimizer.step()
+        # return per_node_loss.detach()
 

@@ -49,7 +49,8 @@ def run_simulation(
     tprev = time.time()
     for r in range(num_rounds):
 
-        print(f"Round {r+1}/{num_rounds}...", end="")
+        if log_metrics:
+            print(f"Round {r+1}/{num_rounds}...", end="")
         # 1. Train
         losses: list[torch.Tensor] = []
         
@@ -77,10 +78,11 @@ def run_simulation(
                     f"[round {r:3d}] mean_benign_acc={metrics['mean_benign_acc']:.4f}  "
                     f"train_loss(mean)={train_loss.mean().item():.4f}",end=""
                 )
-        torch.cuda.synchronize()  # for more accurate timing
-        tnow = time.time()
-        print(f"  time for round: {tnow - tprev:.1f}s")
-        tprev = tnow
+        if log_metrics:
+            torch.cuda.synchronize()  # for more accurate timing
+            tnow = time.time()
+            print(f"  time for round: {tnow - tprev:.1f}s")
+            tprev = tnow
 
     return history
 
