@@ -13,8 +13,9 @@ import json
 import time
 from functools import partial
 from pathlib import Path
-
+import traceback
 import torch
+from tqdm import tqdm
 from byzfl import NodeBank, Topology, run_simulation, NodeDataLoader, sliding_window_partition
 from byzfl import STRATEGIES, ATTACKS
 from byzfl.network.generate import small_world_graph, scale_free_graph, random_graph
@@ -22,7 +23,7 @@ from byzfl.network.generate import small_world_graph, scale_free_graph, random_g
 from datasets import DATASETS, AUGMENTS
 from models import MODELS
 
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,13 @@ ATTACK_KWARGS = {
 # ---------------------------------------------------------------------------
 # Sweep iteration
 # ---------------------------------------------------------------------------
+
+
+def attack_options(malicious_proportion: float) -> list[str]:
+    """At 0% malicious, attack_type is meaningless — single 'none' run."""
+    if malicious_proportion == 0.0:
+        return ["none"]
+    return ATTACK_TYPES
 
 
 def placement_options(malicious_proportion: float) -> list[str]:
@@ -205,6 +213,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-dir", default="experiments/data/results")
     parser.add_argument("--dry-run", action="store_true", help="List configs without running.")
     parser.add_argument("--limit", type=int, default=None, help="Only run the first N configs (after skipping existing).")
+    parser.add_argument("--shard", type=int, default=0, help="Shard index (0-based) of this worker.")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total number of shards splitting the sweep.")
+    parser.add_argument("--log-metrics", action="store_true", help="Print per-round simulator metrics (mangles tqdm; use for debugging).")
     return parser.parse_args()
 
 
@@ -216,14 +227,18 @@ def main() -> None:
 
     combos = list(iter_combos())
     total = len(combos)
-    print(f"sweep_id={args.sweep_id}  device={device}  total_configs={total}")
+    my_combos = [(i, cfg) for i, cfg in enumerate(combos) if i % args.num_shards == args.shard]
+    print(
+        f"sweep_id={args.sweep_id}  device={device}  total_configs={total}  "
+        f"shard={args.shard}/{args.num_shards}  shard_configs={len(my_combos)}"
+    )
     if args.dry_run:
-        for i, cfg in enumerate(combos):
+        for i, cfg in my_combos:
             print(f"[{i + 1}/{total}] {run_id_for(cfg)}")
         return
 
     # Load datasets once into GPU memory.
-    needed = sorted({cfg["dataset"] for cfg in combos})
+    needed = sorted({cfg["dataset"] for _, cfg in my_combos})
     dataset_cache: dict = {}
 
     print("Loading datasets...")
@@ -234,17 +249,19 @@ def main() -> None:
         print(f"  shape={tuple(x_train.shape)}")
 
     # Reuse the same per-node sample index across iterations (depends only on N, S, M).
-    partition_cache: dict[tuple[int, int], torch.Tensor] = {}
+    partition_cache: dict[tuple[int, int], list[torch.Tensor]] = {}
 
     ran = 0
     skipped = 0
     failed = 0
     t_sweep = time.time()
-    for i, cfg in enumerate(combos):
+    pbar = tqdm(my_combos, desc=f"shard {args.shard}/{args.num_shards}", unit="cfg", dynamic_ncols=True)
+    for i, cfg in pbar:
         run_id = run_id_for(cfg)
         out_path = results_root / f"{run_id}.json"
         if out_path.exists():
             skipped += 1
+            pbar.set_postfix(ran=ran, skip=skipped, fail=failed)
             continue
         if args.limit is not None and ran >= args.limit:
             break
@@ -265,8 +282,8 @@ def main() -> None:
         agg = make_aggregate_fn(cfg)
         attack = make_attack_fn(cfg)
 
+        pbar.set_description(f"shard {args.shard}/{args.num_shards} | {run_id}")
         t0 = time.time()
-        print(f"[{i + 1}/{total}] {run_id}  running...")
         try:
             history = run_simulation(
                 bank=bank,
@@ -280,24 +297,23 @@ def main() -> None:
                 steps_per_round=STEPS_PER_ROUND,
                 eval_every=EVAL_EVERY,
                 eval_batch_size=EVAL_BATCH_SIZE,
-                log_metrics=True,
+                log_metrics=args.log_metrics,
             )
         except Exception as e:
             failed += 1
-            print(f"[{i + 1}/{total}] {run_id}  FAIL: {type(e).__name__}: {e}")
+            tqdm.write(f"[{i + 1}/{total}] {run_id}  FAIL: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            pbar.set_postfix(ran=ran, skip=skipped, fail=failed)
             continue
         dt = time.time() - t0
 
         save_history(history, cfg, topology, out_path)
         ran += 1
         last_acc = history[-1]["mean_benign_acc"]
-        elapsed = time.time() - t_sweep
-        eta = elapsed / ran * (total - i - 1 - skipped) if ran > 0 else 0
-        print(
-            f"[{i + 1}/{total}] {run_id}  {dt:5.1f}s  acc={last_acc:.4f}  "
-            f"(elapsed={elapsed / 60:5.1f}m  eta={eta / 60:5.1f}m)"
-        )
+        tqdm.write(f"[{i + 1}/{total}] {run_id}  {dt:5.1f}s  acc={last_acc:.4f}")
+        pbar.set_postfix(ran=ran, skip=skipped, fail=failed)
 
+    pbar.close()
     print(f"\ndone. ran={ran}  skipped={skipped}  failed={failed}  total_time={(time.time() - t_sweep) / 60:.1f}m")
 
 

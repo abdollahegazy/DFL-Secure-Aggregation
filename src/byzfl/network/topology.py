@@ -85,7 +85,8 @@ class Topology:
     def mixing_matrix(self) -> Tensor:
         candidates = self._candidate_mask
         row_sums = candidates.sum(dim=1, keepdim=True).float()
-        return candidates.float() / row_sums
+        W = candidates.float() / row_sums
+        return W.to(self.device, dtype=torch.bfloat16)
     
 
     @cached_property

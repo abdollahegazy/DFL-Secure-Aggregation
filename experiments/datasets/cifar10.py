@@ -29,7 +29,7 @@ def load_cifar10(data_dir: str, device: torch.device, download: bool = True):
 
     return x_train, y_train, x_test, y_test
 
-
+@torch.compile(mode="default")
 def cifar10_augment(x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Per-sample random horizontal flip + pad-4 reflect-crop, applied to a
     stacked (N, B, 3, 32, 32) batch. Returns (x', y) with the same shape.

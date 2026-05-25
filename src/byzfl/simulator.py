@@ -54,9 +54,8 @@ def run_simulation(
         
         for _ in range(steps_per_round):
             x, y = next(train_iter)
+            losses.append(bank.train_step(x, y))
 
-            with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):
-                losses.append(bank.train_step(x, y))
         train_loss = torch.stack(losses).mean(dim=0)  # (N,)
 
         # 2. Attack (in-place mutation of bank.params, malicious rows only)
@@ -110,10 +109,10 @@ def _evaluate(
     total = 0
     with torch.no_grad():
         for start in range(0, test_x.shape[0], batch_size):
-            xc = test_x[start:start + batch_size]
+            xc = test_x[start:start + batch_size].to(device=bank.device, dtype=torch.bfloat16)
             yc = test_y[start:start + batch_size]
-            with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):
-                preds = bank.forward_shared(xc).argmax(dim=-1)    # (N, B), broadcasts x to all N nodes via vmap
+            # with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):
+            preds = bank.forward_shared(xc).argmax(dim=-1)    # (N, B), broadcasts x to all N nodes via vmap
 
             correct += (preds == yc.unsqueeze(0)).sum(dim=1).float()
             total += xc.shape[0]
