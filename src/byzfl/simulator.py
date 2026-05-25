@@ -8,9 +8,15 @@ from collections.abc import Callable, Iterable
 
 import torch
 import time
+from tqdm import tqdm
 
 from .nodebank import NodeBank
 from .network import Topology
+
+
+# see https://docs.pytorch.org/tutorials/intermediate/compiled_autograd_tutorial.html
+torch._dynamo.config.compiled_autograd = True  
+
 
 def run_simulation(
     bank: NodeBank,
@@ -43,16 +49,19 @@ def run_simulation(
       - train_loss_per_node (Tensor, (N,))
     """
     history: list[dict] = []
+    print("Loading data and preparing iterators...", end=" ")
     train_iter = _cycle(train_minibatch_iter)
+
+    print("Starting simulation...")
     tprev = time.time()
-    for r in range(num_rounds):
+    for r in tqdm(range(1, num_rounds + 1), desc="Rounds"):
 
         if log_metrics:
-            print(f"Round {r+1}/{num_rounds}...", end="")
+            print(f"Round {r}/{num_rounds}...", end="")
         # 1. Train
         losses: list[torch.Tensor] = []
         
-        for _ in range(steps_per_round):
+        for _ in tqdm(range(steps_per_round), desc=f"Training Steps for round {r}", leave=False):
             x, y = next(train_iter)
             losses.append(bank.train_step(x, y))
 
@@ -66,7 +75,7 @@ def run_simulation(
         bank.load_params(aggregate_fn(bank.params, topology))
 
         # 4. Evaluate
-        if (r+1) % eval_every == 0 or r == num_rounds - 1:
+        if (r) % eval_every == 0 or r == num_rounds:
             metrics = _evaluate(bank, test_x, test_y, topology.malicious_mask, eval_batch_size)
             metrics["round"] = r
             metrics["train_loss_per_node"] = train_loss.detach().cpu()

@@ -23,6 +23,8 @@ from byzfl.network.generate import small_world_graph, scale_free_graph, random_g
 from datasets import DATASETS, AUGMENTS
 from models import MODELS
 
+from torch.profiler import profile, record_function,ProfilerActivity
+
 # torch.autograd.set_detect_anomaly(True)
 
 
@@ -285,20 +287,25 @@ def main() -> None:
         pbar.set_description(f"shard {args.shard}/{args.num_shards} | {run_id}")
         t0 = time.time()
         try:
-            history = run_simulation(
-                bank=bank,
-                topology=topology,
-                train_minibatch_iter=train_loader,
-                test_x=x_test,
-                test_y=y_test,
-                aggregate_fn=agg,
-                attack_fn=attack,
-                num_rounds=NUM_ROUNDS,
-                steps_per_round=STEPS_PER_ROUND,
-                eval_every=EVAL_EVERY,
-                eval_batch_size=EVAL_BATCH_SIZE,
-                log_metrics=args.log_metrics,
-            )
+
+            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True,with_stack=True,with_flops=True) as prof:
+
+                with record_function("run_simulation"):
+                    history = run_simulation(
+                        bank=bank,
+                        topology=topology,
+                        train_minibatch_iter=train_loader,
+                        test_x=x_test,
+                        test_y=y_test,
+                        aggregate_fn=agg,
+                        attack_fn=attack,
+                        num_rounds=NUM_ROUNDS,
+                        steps_per_round=STEPS_PER_ROUND,
+                        eval_every=EVAL_EVERY,
+                        eval_batch_size=EVAL_BATCH_SIZE,
+                        log_metrics=args.log_metrics,
+                    )
+            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=50))
         except Exception as e:
             failed += 1
             tqdm.write(f"[{i + 1}/{total}] {run_id}  FAIL: {type(e).__name__}: {e}")

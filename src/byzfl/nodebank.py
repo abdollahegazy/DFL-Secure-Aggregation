@@ -86,5 +86,6 @@ class NodeBank:
         """One train step: vmap forward, per-node CE loss,  sum, backward, AdamW step.
         Returns per-node loss (N,)."""
         x = x.to(self.device, dtype=torch.bfloat16)
-        return self.compiled_train_step(self.params, self.buffers, x, y).detach()
+        torch.compiler.cudagraph_mark_step_begin()
+        return self.compiled_train_step(self.params, self.buffers, x, y).detach().clone()
 
