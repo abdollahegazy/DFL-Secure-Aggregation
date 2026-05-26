@@ -117,7 +117,9 @@ def _evaluate(
     correct = torch.zeros(bank.n, device=bank.device)
     total = 0
     with torch.no_grad():
-        for start in range(0, test_x.shape[0], batch_size):
+        # drop last partial batch for simplicity with torch compile
+        n_full = (test_x.shape[0] // batch_size) * batch_size
+        for start in range(0, n_full, batch_size):
             xc = test_x[start:start + batch_size].to(device=bank.device, dtype=torch.bfloat16)
             yc = test_y[start:start + batch_size]
             # with torch.autocast(device_type=bank.device.type, dtype=torch.bfloat16):

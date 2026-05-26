@@ -23,8 +23,6 @@ from byzfl.network.generate import small_world_graph, scale_free_graph, random_g
 from datasets import DATASETS, AUGMENTS
 from models import MODELS
 
-from torch.profiler import profile, record_function,ProfilerActivity
-
 # torch.autograd.set_detect_anomaly(True)
 
 
@@ -59,7 +57,7 @@ SMALL_WORLD_BETA = 0.1
 SCALE_FREE_M = 3
 EDGE_DENSITY = 0.1
 
-SGD_OPTIMIZER_KWARGS = {"lr": 0.1, "momentum": 0.9, "weight_decay": 5e-4}
+SGD_OPTIMIZER_KWARGS = {"lr": 0.1, "momentum": 0.9, "weight_decay": 5e-4, "fused": True}
 ADAMW_OPTIMIZER_KWARGS = {"lr": 1e-3, "weight_decay": 1e-2}
 
 AGG_KWARGS = {
@@ -287,10 +285,6 @@ def main() -> None:
         pbar.set_description(f"shard {args.shard}/{args.num_shards} | {run_id}")
         t0 = time.time()
         try:
-
-            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True,with_stack=True,with_flops=True) as prof:
-
-                with record_function("run_simulation"):
                     history = run_simulation(
                         bank=bank,
                         topology=topology,
@@ -305,7 +299,6 @@ def main() -> None:
                         eval_batch_size=EVAL_BATCH_SIZE,
                         log_metrics=args.log_metrics,
                     )
-            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=50))
         except Exception as e:
             failed += 1
             tqdm.write(f"[{i + 1}/{total}] {run_id}  FAIL: {type(e).__name__}: {e}")
