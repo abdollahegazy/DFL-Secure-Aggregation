@@ -44,9 +44,9 @@ ITERATIONS = [0, 1, 2, 3, 4]
 
 N = 128 # number of nodes;
 S = 10000 # number of samples per node;
-B = 512  # per-node batch size;
+B = 256  # per-node batch size;
 
-NUM_ROUNDS = 50
+NUM_ROUNDS = 100
 STEPS_PER_ROUND = S // B  # ≈ 1 epoch over the per-node pool
 
 EVAL_EVERY = 10
@@ -57,7 +57,7 @@ SMALL_WORLD_BETA = 0.1
 SCALE_FREE_M = 3
 EDGE_DENSITY = 0.1
 
-SGD_OPTIMIZER_KWARGS = {"lr": 0.1, "momentum": 0.9, "weight_decay": 5e-4, "fused": True}
+SGD_OPTIMIZER_KWARGS = {"lr": 0.1, "momentum": 0.9, "weight_decay": 5e-4} # ,"fused": True}
 ADAMW_OPTIMIZER_KWARGS = {"lr": 1e-3, "weight_decay": 1e-2}
 
 AGG_KWARGS = {
@@ -73,6 +73,7 @@ ATTACK_KWARGS = {
     "signflip": {},
     "set_random": {},
 }
+
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +110,7 @@ def iter_combos():
                 for iteration in ITERATIONS:
                     for mal in MALICIOUS_PROPORTIONS:
                         for placement in placement_options(mal):
-                            for attack in ATTACK_TYPES:
+                            for attack in attack_options(mal):
                                 yield {
                                     "dataset": dataset,
                                     "topology": topology,
